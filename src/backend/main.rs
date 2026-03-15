@@ -1,18 +1,50 @@
-use std::{collections::HashMap, time::Duration};
-use log::{info, error, warn, trace};
-use std::thread::sleep;
+use log::{error, info, trace, warn};
+use std::{collections::HashMap, net::TcpListener, time::Duration};
+use tiny_http::{Header, Response};
+use url::form_urlencoded;
+
+const QUERY_ENDPOINT: &str = "/query";
 
 fn main() {
     env_logger::init();
     let mut search = Search::default();
-    search.add_dir(std::path::Path::new("opengl-refs")).unwrap();
-    sleep(Duration::from_secs(10));
+    _ = search.add_dir(std::path::Path::new("opengl-refs"));
+    let server = tiny_http::Server::http("0.0.0.0:6969").unwrap();
+    loop {
+        let rq = match server.recv() {
+            Ok(rq) => rq,
+            Err(e) => {
+                warn!("Http recv. error: {e}");
+                continue;
+            }
+        };
+
+        if rq.url().starts_with(QUERY_ENDPOINT) {
+            let url = rq.url();
+            let query_string = url.split('?').nth(1).unwrap_or("");
+
+            let params: HashMap<_, _> =
+                form_urlencoded::parse(query_string.as_bytes()).into_owned().collect();
+
+            if let Some(query) = params.get("query") {
+                let q = query.split_whitespace().collect::<Vec<_>>();
+                let results = search.query(&q);
+                let results = serde_json::to_string(&results).unwrap();
+                let respo = Response::from_string(results).with_header(
+                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                ).with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=UTF-8"[..]).unwrap(),
+                );
+                _ = rq.respond(respo);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct Search {
     docs: HashMap<String, Doc>,
-    cache: QueryScoreCache
+    cache: QueryScoreCache,
 }
 
 #[derive(Debug, Default)]
@@ -47,21 +79,25 @@ impl Search {
                 let tf = if let Some(tf_score) = self.cache.get_tf(k.to_string(), t.to_string()) {
                     *tf_score
                 } else {
-                    let Some(count) = v.words.get(&t) else {continue};
-                    let tf = *count as f64 / v.words.values().copied().sum::<usize>() as f64;
+                    let Some(count) = v.words.get(&t) else {
+                        continue;
+                    };
+                    let tf = *count as f64 / v.doc_word_count as f64;
                     self.cache.set_tf(k.to_string(), t.to_string(), tf);
                     tf
                 };
 
-                let idf = if let Some(idf_score) = self.cache.get_idf(k.to_string(), t.to_string()) {
+                let idf = if let Some(idf_score) = self.cache.get_idf(k.to_string(), t.to_string())
+                {
                     *idf_score
                 } else {
                     let idf = (self.docs.iter().count() as f64
-                    / self.docs
-                        .iter()
-                        .filter(|(_, d)| d.words.contains_key(&t))
-                        .count() as f64)
-                    .log2();
+                        / self
+                            .docs
+                            .iter()
+                            .filter(|(_, d)| d.words.contains_key(&t))
+                            .count() as f64)
+                        .log2();
                     self.cache.set_idf(k.to_string(), t.to_string(), idf);
                     idf
                 };
@@ -75,15 +111,17 @@ impl Search {
             .filter(|(_p, d)| **d != 0.0)
             .map(|(p, _)| p.to_owned().clone())
             .collect()
-
     }
     pub fn add_dir(&mut self, p: &std::path::Path) -> Result<(), ()> {
         for d in p.read_dir().map_err(|e| {
             warn!("Failed to read dir {}: {e}", p.display());
         })? {
-            let Ok(d) = d else {continue};
+            let Ok(d) = d else { continue };
             let Ok(meta) = d.metadata() else {
-                warn!("Failed to retrieve metadata for file {}", d.path().display());
+                warn!(
+                    "Failed to retrieve metadata for file {}",
+                    d.path().display()
+                );
                 continue;
             };
             if meta.is_file() {
@@ -91,7 +129,8 @@ impl Search {
                     warn!("Failed to create doc. from file {}", d.path().display());
                     continue;
                 };
-                self.docs.insert(d.path().to_string_lossy().to_string(), doc);
+                self.docs
+                    .insert(d.path().to_string_lossy().to_string(), doc);
             } else {
                 _ = self.add_dir(&d.path());
             }
@@ -108,14 +147,9 @@ impl Search {
                     let parser = xml::EventReader::new(file);
                     let mut text = String::with_capacity(1024 * 256);
                     for e in parser {
-                        match e {
-                            Ok(xml::reader::XmlEvent::Characters(c)) => {
-                                text.push_str(&c);
-                                text.push(' ');
-                            }
-                            other => {
-                                //trace!("{other:?}");
-                            }
+                        if let Ok(xml::reader::XmlEvent::Characters(c)) = e {
+                            text.push_str(&c);
+                            text.push(' ');
                         }
                     }
                     Ok(Doc::from_text(&text))
@@ -123,31 +157,36 @@ impl Search {
                 "pdf" => {
                     let doc = lopdf::Document::load(&p).unwrap();
                     if doc.is_encrypted() {
-                        return Err(())
+                        return Err(());
                     }
-                    Ok(Doc::from_text(&doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>()).unwrap()))
+                    Ok(Doc::from_text(
+                        &doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>())
+                            .unwrap(),
+                    ))
                 }
-                "html" => Ok(Doc::from_text(&nanohtml2text::html2text(&std::fs::read_to_string(p).map_err(|e| {
-                    warn!("Failed to extract text from html doc. {}: {e}", p.display())
-                })?))),
-                _ => Err(())
-            }
-            _ => {
-                Err(())
-            }
+                "html" => Ok(Doc::from_text(&nanohtml2text::html2text(
+                    &std::fs::read_to_string(p).map_err(|e| {
+                        warn!("Failed to extract text from html doc. {}: {e}", p.display())
+                    })?,
+                ))),
+                _ => Err(()),
+            },
+            _ => Err(()),
         }
     }
 }
 
 #[derive(Debug, Default)]
 pub struct Doc {
-    words: HashMap<String, usize>
+    words: HashMap<String, usize>,
+    doc_word_count: usize
 }
 
 impl Doc {
     pub fn from_text(text: &str) -> Self {
         let mut words_map = HashMap::new();
         let mut current_word = String::new();
+        let mut doc_word_count = 0;
 
         let add_to_map = |word: &str, map: &mut HashMap<String, usize>| {
             if !word.is_empty() {
@@ -161,14 +200,12 @@ impl Doc {
             } else {
                 add_to_map(&current_word, &mut words_map);
                 current_word.clear();
-                if !c.is_whitespace() {
-                    add_to_map(&c.to_string(), &mut words_map);
-                }
+                doc_word_count += 1;
             }
         }
 
         add_to_map(&current_word, &mut words_map);
 
-        Doc { words: words_map }
+        Doc { words: words_map, doc_word_count}
     }
 }

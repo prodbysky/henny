@@ -3,9 +3,21 @@ name = "henny"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "backend"
+path = "src/backend/main.rs"
+
+[[bin]]
+name = "frontend"
+path = "src/frontend/main.rs"
+
 [dependencies]
 env_logger = "0.11.9"
 log = "0.4.29"
 lopdf = { version = "0.39.0", default-features = false }
 nanohtml2text = { version = "0.2.1", default-features = false }
+tiny_http = "0.12.0"
+url = "2.5.8"
 xml = { version = "1.2.1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

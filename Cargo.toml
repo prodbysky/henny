@@ -11,6 +11,10 @@ path = "src/backend/main.rs"
 name = "frontend"
 path = "src/frontend/main.rs"
 
+[lib]
+name = "tfidf"
+path = "src/tfidf/lib.rs"
+
 [dependencies]
 env_logger = "0.11.9"
 log = "0.4.29"

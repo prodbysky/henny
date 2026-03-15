@@ -70,10 +70,15 @@ impl QueryScoreCache {
 
 impl Search {
     pub fn query(&mut self, terms: &[&str]) -> Vec<String> {
+        let stem = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+        let mut terms_ = vec![];
+        for t in terms {
+            terms_.push(stem.stem(t).to_string());
+        }
         let mut docs = vec![];
         for (k, v) in self.docs.iter() {
             let mut score = 0.0;
-            for t in terms {
+            for t in &terms_ {
                 let t = t.to_lowercase();
 
                 let tf = if let Some(tf_score) = self.cache.get_tf(k.to_string(), t.to_string()) {
@@ -184,6 +189,7 @@ pub struct Doc {
 
 impl Doc {
     pub fn from_text(text: &str) -> Self {
+        let stem = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
         let mut words_map = HashMap::new();
         let mut current_word = String::new();
         let mut doc_word_count = 0;
@@ -198,13 +204,13 @@ impl Doc {
             if c.is_alphanumeric() || c == '\'' || c == '-' {
                 current_word.push(c);
             } else {
-                add_to_map(&current_word, &mut words_map);
+                add_to_map(&stem.stem(&current_word).to_string(), &mut words_map);
                 current_word.clear();
                 doc_word_count += 1;
             }
         }
 
-        add_to_map(&current_word, &mut words_map);
+        add_to_map(&stem.stem(&current_word).to_string(), &mut words_map);
 
         Doc { words: words_map, doc_word_count}
     }

@@ -6,6 +6,13 @@ queryForm.addEventListener("submit", async function (event) {
     const container = document.getElementById("results");
     container.innerHTML = "";
 
+    if (data.length == 0) {
+        const div = document.createElement("div");
+        div.className = "result-item";
+        div.textContent = "No results found";
+
+        container.appendChild(div);
+    }
     data.forEach((item, i) => {
         const div = document.createElement("div");
         div.className = "result-item";

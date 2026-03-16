@@ -34,7 +34,7 @@ Then open `http://127.0.0.1:7070` in your browser.
 
 ### Document directory
 
-Right now the backend indexes the folder opengl-refs, cause I'm yet to implement customization.
+You can customize the served/indexed folder with cli args for the backend
 
 ## Dependencies
 
@@ -44,3 +44,12 @@ Right now the backend indexes the folder opengl-refs, cause I'm yet to implement
 - [rust-stemmers](https://crates.io/crates/rust-stemmers) - Snowball stemming
 - [tiny_http](https://crates.io/crates/tiny_http) - HTTP server
 - [serde_json](https://crates.io/crates/serde_json) - JSON serialization
+- [clap](https://crates.io/crates/clap) - God mista zozin would be dissapointed
+
+## TODO
+ - Pagination: `?query=foo&limit=10&offset=0`
+ - Show tf-idf score next to result in query
+ - Allow user to click on result and send that stuff over
+ - /status frontend - shows amount of docs, etc.
+ - Persistent user accounts? Have a search hist., last downloaded docs. etc.
+ - 

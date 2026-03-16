@@ -9,9 +9,11 @@ const QUERY_ENDPOINT: &str = "/query";
 
 fn main() {
     env_logger::init();
+    let args = Args::parse();
+
     let mut search = Search::default();
-    _ = search.add_dir(std::path::Path::new("opengl-refs"));
-    let server = tiny_http::Server::http("0.0.0.0:6969").unwrap();
+    _ = search.add_dir(std::path::Path::new(&args.doc_folder));
+    let server = tiny_http::Server::http(format!("0.0.0.0:{}", args.port)).unwrap();
     loop {
         let rq = match server.recv() {
             Ok(rq) => rq,
@@ -61,4 +63,18 @@ fn main() {
             _ = rq.respond(response);
         }
     }
+}
+
+use clap::Parser;
+
+/// Backend server for henny webapp i guess
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Args {
+    /// Port to bind the server to
+    #[arg(short, long, default_value_t = 6969)]
+    port: u16,
+
+    #[arg(short, long, default_value_t = ("opengl-refs".to_string()))]
+    doc_folder: String 
 }

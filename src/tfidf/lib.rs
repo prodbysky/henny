@@ -1,6 +1,6 @@
 // TODO: Make this more of a library (good errors, performance etc)
-use std::collections::HashMap;
 use log::warn;
+use std::collections::HashMap;
 
 #[derive(Debug, Default)]
 pub struct Search {
@@ -145,7 +145,7 @@ impl Search {
 #[derive(Debug, Default)]
 pub struct Doc {
     words: HashMap<String, usize>,
-    doc_word_count: usize
+    doc_word_count: usize,
 }
 
 impl Doc {
@@ -173,6 +173,9 @@ impl Doc {
 
         add_to_map(&stem.stem(&current_word).to_string(), &mut words_map);
 
-        Doc { words: words_map, doc_word_count}
+        Doc {
+            words: words_map,
+            doc_word_count,
+        }
     }
 }

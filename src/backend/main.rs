@@ -25,21 +25,27 @@ fn main() {
             let url = rq.url();
             let query_string = url.split('?').nth(1).unwrap_or("");
 
-            let params: HashMap<_, _> =
-                form_urlencoded::parse(query_string.as_bytes()).into_owned().collect();
+            let params: HashMap<_, _> = form_urlencoded::parse(query_string.as_bytes())
+                .into_owned()
+                .collect();
 
             if let Some(query) = params.get("query") {
                 let q = query.split_whitespace().collect::<Vec<_>>();
                 let results = search.query(&q);
                 let results = serde_json::to_string(&results).unwrap();
-                let respo = Response::from_string(results).with_header(
-                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-                ).with_header(
-                    Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=UTF-8"[..]).unwrap(),
-                );
+                let respo = Response::from_string(results)
+                    .with_header(
+                        Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                    )
+                    .with_header(
+                        Header::from_bytes(
+                            &b"Content-Type"[..],
+                            &b"application/json; charset=UTF-8"[..],
+                        )
+                        .unwrap(),
+                    );
                 _ = rq.respond(respo);
             }
         }
     }
 }
-

@@ -1,7 +1,8 @@
 queryForm.addEventListener("submit", async function (event) {
     event.preventDefault();
     const query = document.getElementById("query").value;
-    const result = await fetch("http://127.0.0.1:6969/query?query=" + encodeURIComponent(query));
+    const backend_url = `http://${window.location.hostname}:6969`
+    const result = await fetch(`${backend_url}/query?query=${encodeURIComponent(query)}`);
     const data = await result.json();
     const container = document.getElementById("results");
     container.innerHTML = "";

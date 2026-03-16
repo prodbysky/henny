@@ -1,6 +1,6 @@
 // TODO: Make this more of a library (good errors, performance etc)
 use log::warn;
-use std::collections::HashMap;
+use std::{collections::HashMap, io};
 
 #[derive(Debug, Default)]
 pub struct Search {
@@ -78,10 +78,9 @@ impl Search {
             .map(|(p, _)| p.to_owned().clone())
             .collect()
     }
-    pub fn add_dir(&mut self, p: &std::path::Path) -> Result<(), ()> {
-        for d in p.read_dir().map_err(|e| {
-            warn!("Failed to read dir {}: {e}", p.display());
-        })? {
+    pub fn add_dir(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
+        let mut errs = vec![];
+        for d in p.read_dir()? {
             let Ok(d) = d else { continue };
             let Ok(meta) = d.metadata() else {
                 warn!(
@@ -91,25 +90,29 @@ impl Search {
                 continue;
             };
             if meta.is_file() {
-                let Ok(doc) = self.new_doc(&d.path()) else {
-                    warn!("Failed to create doc. from file {}", d.path().display());
-                    continue;
+                let doc = match self.new_doc(&d.path()) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        errs.push(e);
+                        continue;
+                    },
                 };
                 self.docs
                     .insert(d.path().to_string_lossy().to_string(), doc);
             } else {
-                _ = self.add_dir(&d.path());
+                // uhhhhh
+                errs.extend(self.add_dir(&d.path())?);
             }
         }
-        Ok(())
+        Ok(errs)
     }
-    fn new_doc(&mut self, p: &std::path::Path) -> Result<Doc, ()> {
+    fn new_doc(&mut self, p: &std::path::Path) -> Result<Doc, DocumentCreateError> {
         match p.extension() {
             Some(s) => match s.to_str().unwrap() {
                 "xml" | "xhtml" => {
-                    let file = std::io::BufReader::new(std::fs::File::open(p).map_err(|e| {
-                        warn!("Failed to open xml file {}: {e}", p.display());
-                    })?);
+                    let file = std::io::BufReader::new(
+                        std::fs::File::open(p)? 
+                    );
                     let parser = xml::EventReader::new(file);
                     let mut text = String::with_capacity(1024 * 256);
                     for e in parser {
@@ -123,22 +126,55 @@ impl Search {
                 "pdf" => {
                     let doc = lopdf::Document::load(&p).unwrap();
                     if doc.is_encrypted() {
-                        return Err(());
+                        return Err(DocumentCreateError::EncryptedPDF);
                     }
                     Ok(Doc::from_text(
-                        &doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>())
-                            .unwrap(),
+                        &doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>())? 
                     ))
                 }
                 "html" => Ok(Doc::from_text(&nanohtml2text::html2text(
-                    &std::fs::read_to_string(p).map_err(|e| {
-                        warn!("Failed to extract text from html doc. {}: {e}", p.display())
-                    })?,
+                    &std::fs::read_to_string(p)?
                 ))),
-                _ => Err(()),
+                ext => Err(DocumentCreateError::UnsupportedFileExtension(Some(ext.to_string()))),
             },
-            _ => Err(()),
+            _ => Err(DocumentCreateError::UnsupportedFileExtension(None)),
         }
+    }
+}
+
+
+
+#[derive(Debug)]
+pub enum DocumentCreateError {
+    UnsupportedFileExtension(Option<String>),
+    FailedToExtractPDFText(lopdf::Error),
+    IOError(std::io::Error),
+    EncryptedPDF,
+}
+
+impl std::error::Error for DocumentCreateError {}
+
+impl std::fmt::Display for DocumentCreateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedFileExtension(None) => write!(f, "Can't index binary file"),
+            Self::UnsupportedFileExtension(Some(ext)) => write!(f, "Can't index file with extension: {ext}"),
+            Self::FailedToExtractPDFText(err) => write!(f, "Failed to extract text from pdf: {err}"),
+            Self::IOError(io_err) => write!(f, "An IO error occurred: {io_err}"),
+            Self::EncryptedPDF => write!(f, "Couldn't extract text from an encrypted pdf file"),
+        }
+    }
+}
+
+impl From<lopdf::Error> for DocumentCreateError {
+    fn from(value: lopdf::Error) -> Self {
+        Self::FailedToExtractPDFText(value)
+    }
+}
+
+impl From<std::io::Error> for DocumentCreateError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IOError(value)
     }
 }
 

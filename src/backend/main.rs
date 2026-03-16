@@ -29,23 +29,36 @@ fn main() {
                 .into_owned()
                 .collect();
 
-            if let Some(query) = params.get("query") {
-                let q = query.split_whitespace().collect::<Vec<_>>();
-                let results = search.query(&q);
-                let results = serde_json::to_string(&results).unwrap();
-                let respo = Response::from_string(results)
-                    .with_header(
-                        Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-                    )
-                    .with_header(
-                        Header::from_bytes(
-                            &b"Content-Type"[..],
-                            &b"application/json; charset=UTF-8"[..],
+            let response = match params.get("query") {
+                Some(query) => {
+                    let q = query.split_whitespace().collect::<Vec<_>>();
+                    let results = search.query(&q);
+                    let results = format!("{{\"results\": {}}}", serde_json::to_string(&results).unwrap());
+                    Response::from_string(results)
+                        .with_header(
+                            Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
                         )
-                        .unwrap(),
-                    );
-                _ = rq.respond(respo);
-            }
+                        .with_header(
+                            Header::from_bytes(
+                                &b"Content-Type"[..],
+                                &b"application/json; charset=UTF-8"[..],
+                            )
+                            .unwrap(),
+                        )
+                }
+                None => {
+                    let body = format!("{{\"error\": \"missing `query` parameter\"}}");
+                    Response::from_string(body)
+                        .with_status_code(400)
+                        .with_header(
+                            Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=UTF-8"[..]).unwrap(),
+                        )
+                        .with_header(
+                            Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                        )
+                }
+            };
+            _ = rq.respond(response);
         }
     }
 }

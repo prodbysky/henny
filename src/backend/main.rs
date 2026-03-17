@@ -75,6 +75,6 @@ struct Args {
     #[arg(short, long, default_value_t = 6969)]
     port: u16,
 
-    #[arg(short, long, default_value_t = ("opengl-refs".to_string()))]
+    #[arg(short, long, default_value_t = ("hendocs/".to_string()))]
     doc_folder: String 
 }

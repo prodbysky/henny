@@ -30,7 +30,7 @@ impl QueryScoreCache {
 }
 
 impl Search {
-    pub fn query(&mut self, terms: &[&str]) -> Vec<String> {
+    pub fn query(&mut self, terms: &[&str]) -> Vec<&str> {
         let stem = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
         let mut terms_ = vec![];
         for t in terms {
@@ -73,9 +73,8 @@ impl Search {
         }
         docs.sort_by(|(_, b1), (_, a1)| a1.total_cmp(b1));
         docs.iter()
-            .map(|(p, d)| (p, d))
-            .filter(|(_p, d)| **d != 0.0)
-            .map(|(p, _)| p.to_owned().clone())
+            .filter(|(_p, d)| *d != 0.0)
+            .map(|(p, _)| p.as_str())
             .collect()
     }
     pub fn add_dir(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
@@ -95,7 +94,7 @@ impl Search {
                     Err(e) => {
                         errs.push(e);
                         continue;
-                    },
+                    }
                 };
                 self.docs
                     .insert(d.path().to_string_lossy().to_string(), doc);
@@ -110,9 +109,7 @@ impl Search {
         match p.extension() {
             Some(s) => match s.to_str().unwrap() {
                 "xml" | "xhtml" => {
-                    let file = std::io::BufReader::new(
-                        std::fs::File::open(p)? 
-                    );
+                    let file = std::io::BufReader::new(std::fs::File::open(p)?);
                     let parser = xml::EventReader::new(file);
                     let mut text = String::with_capacity(1024 * 256);
                     for e in parser {
@@ -128,21 +125,21 @@ impl Search {
                     if doc.is_encrypted() {
                         return Err(DocumentCreateError::EncryptedPDF);
                     }
-                    Ok(Doc::from_text(
-                        &doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>())? 
-                    ))
+                    Ok(Doc::from_text(&doc.extract_text(
+                        &doc.get_pages().into_keys().collect::<Vec<_>>(),
+                    )?))
                 }
                 "html" => Ok(Doc::from_text(&nanohtml2text::html2text(
-                    &std::fs::read_to_string(p)?
+                    &std::fs::read_to_string(p)?,
                 ))),
-                ext => Err(DocumentCreateError::UnsupportedFileExtension(Some(ext.to_string()))),
+                ext => Err(DocumentCreateError::UnsupportedFileExtension(Some(
+                    ext.to_string(),
+                ))),
             },
             _ => Err(DocumentCreateError::UnsupportedFileExtension(None)),
         }
     }
 }
-
-
 
 #[derive(Debug)]
 pub enum DocumentCreateError {
@@ -158,8 +155,12 @@ impl std::fmt::Display for DocumentCreateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnsupportedFileExtension(None) => write!(f, "Can't index binary file"),
-            Self::UnsupportedFileExtension(Some(ext)) => write!(f, "Can't index file with extension: {ext}"),
-            Self::FailedToExtractPDFText(err) => write!(f, "Failed to extract text from pdf: {err}"),
+            Self::UnsupportedFileExtension(Some(ext)) => {
+                write!(f, "Can't index file with extension: {ext}")
+            }
+            Self::FailedToExtractPDFText(err) => {
+                write!(f, "Failed to extract text from pdf: {err}")
+            }
             Self::IOError(io_err) => write!(f, "An IO error occurred: {io_err}"),
             Self::EncryptedPDF => write!(f, "Couldn't extract text from an encrypted pdf file"),
         }

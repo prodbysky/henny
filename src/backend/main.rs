@@ -1,4 +1,4 @@
-use log::warn;
+use log::{error, warn, info};
 use std::collections::HashMap;
 use tiny_http::{Header, Response};
 use url::form_urlencoded;
@@ -12,6 +12,10 @@ fn main() {
     let args = Args::parse();
 
     let mut search = Search::default();
+    if !std::path::Path::new(&args.doc_folder).exists() {
+        error!("Document folder {} does not exist.", &args.doc_folder);
+        return;
+    }
     _ = search.add_dir(std::path::Path::new(&args.doc_folder));
     let server = tiny_http::Server::http(format!("0.0.0.0:{}", args.port)).unwrap();
     loop {
@@ -22,6 +26,8 @@ fn main() {
                 continue;
             }
         };
+
+        info!("Received request {:#?} from {:?}", &rq, rq.remote_addr());
 
         if rq.url().starts_with(QUERY_ENDPOINT) {
             let url = rq.url();
@@ -34,7 +40,9 @@ fn main() {
             let response = match params.get("query") {
                 Some(query) => {
                     let q = query.split_whitespace().collect::<Vec<_>>();
+                    let time = std::time::Instant::now();
                     let results = search.query(&q);
+                    info!("{:?} made a query ({:?}), sending back {} results (collected in {:.2}s.)", rq.remote_addr(), &q, results.len(), time.elapsed().as_secs_f64());
                     let results = format!("{{\"results\": {}}}", serde_json::to_string(&results).unwrap());
                     Response::from_string(results)
                         .with_header(
@@ -50,6 +58,7 @@ fn main() {
                 }
                 None => {
                     let body = format!("{{\"error\": \"missing `query` parameter\"}}");
+                    warn!("Received request from {:?}, which had a missing query param (borked?)", rq.remote_addr());
                     Response::from_string(body)
                         .with_status_code(400)
                         .with_header(

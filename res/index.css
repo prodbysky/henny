@@ -23,6 +23,20 @@ body {
     animation: flyInRight 0.4s ease-out forwards;
 }
 
+.result-item:not(.error-item) {
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.result-item:not(.error-item):hover {
+    background: #333333;
+    transform: translateX(4px);
+}
+
+.result-item:not(.error-item):active {
+    background: #3a3a3a;
+}
+
 #results {
     font-family: "Iosevka Charon Mono", monospace;
 }

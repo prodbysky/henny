@@ -23,8 +23,10 @@ queryForm.addEventListener("submit", async function (event) {
             const div = document.createElement("div");
             div.className = "result-item";
             div.textContent = item;
-
             div.style.animationDelay = (i * 0.02) + "s";
+            div.style.cursor = "pointer";
+
+            div.addEventListener("click", () => downloadFile(item, backend_url));
 
             container.appendChild(div);
         });
@@ -33,6 +35,31 @@ queryForm.addEventListener("submit", async function (event) {
         return;
     }
 });
+
+async function downloadFile(path, backend_url) {
+    try {
+        const response = await fetch(`${backend_url}/file?path=${encodeURIComponent(path)}`);
+        if (!response.ok) {
+            const data = await response.json();
+            showError(data.error || "Failed to download file");
+            return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename="([^"]+)"/);
+        a.download = match ? match[1] : path.split("/").pop();
+
+        a.href = url;
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        showError("Failed to download file");
+    }
+}
 
 function showMessage(text) {
     const div = document.createElement("div");

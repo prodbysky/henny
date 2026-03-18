@@ -1,4 +1,4 @@
-use log::warn;
+use log::{warn, info};
 use std::collections::HashMap;
 use tiny_http::{Header, Request, Response};
 use url::form_urlencoded;
@@ -12,6 +12,8 @@ fn main() {
     env_logger::init();
     let args = Args::parse();
 
+    let mut stats = Stats::default();
+
     let mut search = Search::default();
     _ = search.add_dir(std::path::Path::new(&args.doc_folder));
     let server = tiny_http::Server::http(format!("0.0.0.0:{}", args.port)).unwrap();
@@ -24,15 +26,47 @@ fn main() {
             }
         };
 
+        stats.request_count += 1;
+
         if rq.url().starts_with(QUERY_ENDPOINT) {
-            handle_query(rq, &mut search);
+            handle_query(rq, &mut search, &mut stats);
         } else if rq.url().starts_with(FILE_ENDPOINT) {
-            handle_file_download(rq, &args);
+            handle_file_download(rq, &args, &mut stats);
         }
+
+        info!("{}", &stats);
     }
 }
 
-fn handle_query(rq: Request, search: &mut Search) {
+
+#[derive(Debug, Default)]
+struct Stats {
+    request_count: usize,
+    query_count: usize,
+    download_count: usize,
+    query_time: std::time::Duration,
+    download_size: usize,
+}
+
+impl std::fmt::Display for Stats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Statistics: ")?;
+        writeln!(f, "    Request count:         {}", self.request_count)?;
+        writeln!(f, "    Query count:           {}", self.query_count)?;
+        writeln!(f, "    File download count:   {}", self.download_count)?;
+        writeln!(f, "    Average query time:    {} s.", self.query_time.as_secs_f64() / self.query_count as f64)?;
+        writeln!(f, "    Whole downloaded size: {} kb.", self.download_size / 1024)?;
+        if self.download_count != 0 {
+            writeln!(f, "    Avg. downloaded size:  {} kb.", (self.download_size / 1024) as f64 / self.download_count as f64)?;
+        } else {
+            writeln!(f, "    Avg. downloaded size:  0 kb.")?;
+        }
+        Ok(())
+    }
+}
+
+fn handle_query(rq: Request, search: &mut Search, stats: &mut Stats) {
+    stats.query_count += 1;
     let url = rq.url();
     let query_string = url.split('?').nth(1).unwrap_or("");
 
@@ -43,7 +77,9 @@ fn handle_query(rq: Request, search: &mut Search) {
     let response = match params.get("query") {
         Some(query) => {
             let q = query.split_whitespace().collect::<Vec<_>>();
+            let time = std::time::Instant::now();
             let results = search.query(&q);
+            stats.query_time += time.elapsed();
             let results = format!(
                 "{{\"results\": {}}}",
                 serde_json::to_string(&results).unwrap()
@@ -78,9 +114,12 @@ fn handle_query(rq: Request, search: &mut Search) {
     };
     _ = rq.respond(response);
 }
-fn handle_file_download(rq: Request, args: &Args) {
+
+fn handle_file_download(rq: Request, args: &Args, stats: &mut Stats) {
     let url = rq.url().to_string();
     let query_string = url.split('?').nth(1).unwrap_or("");
+    
+    stats.download_count += 1;
 
     let params: HashMap<_, _> = form_urlencoded::parse(query_string.as_bytes())
         .into_owned()
@@ -95,6 +134,7 @@ fn handle_file_download(rq: Request, args: &Args) {
                 Ok(canonical) if canonical.starts_with(&doc_root) => {
                     match std::fs::read(&canonical) {
                         Ok(bytes) => {
+                            stats.download_size += bytes.len();
                             let mime = mime_for_path(&canonical);
                             let filename = canonical
                                 .file_name()

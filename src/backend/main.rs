@@ -28,40 +28,23 @@ fn main() {
 
         stats.request_count += 1;
 
-        if rq.url().starts_with(QUERY_ENDPOINT) {
+        let url = rq.url();
+
+        if url.starts_with(QUERY_ENDPOINT) {
             handle_query(rq, &mut search, &mut stats);
-        } else if rq.url().starts_with(FILE_ENDPOINT) {
+        } else if url.starts_with(FILE_ENDPOINT) {
             handle_file_download(rq, &args, &mut stats);
+        } else if url == "/" {
+            handle_root(rq);
+        } else if url == "/index.css" {
+            handle_css(rq);
+        } else if url == "/index.js" {
+            handle_js(rq);
+        } else {
+            handle_404(rq);
         }
 
         info!("{}", &stats);
-    }
-}
-
-
-#[derive(Debug, Default)]
-struct Stats {
-    request_count: usize,
-    query_count: usize,
-    download_count: usize,
-    query_time: std::time::Duration,
-    download_size: usize,
-}
-
-impl std::fmt::Display for Stats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Statistics: ")?;
-        writeln!(f, "    Request count:         {}", self.request_count)?;
-        writeln!(f, "    Query count:           {}", self.query_count)?;
-        writeln!(f, "    File download count:   {}", self.download_count)?;
-        writeln!(f, "    Average query time:    {} s.", self.query_time.as_secs_f64() / self.query_count as f64)?;
-        writeln!(f, "    Whole downloaded size: {} kb.", self.download_size / 1024)?;
-        if self.download_count != 0 {
-            writeln!(f, "    Avg. downloaded size:  {} kb.", (self.download_size / 1024) as f64 / self.download_count as f64)?;
-        } else {
-            writeln!(f, "    Avg. downloaded size:  0 kb.")?;
-        }
-        Ok(())
     }
 }
 
@@ -183,6 +166,35 @@ fn mime_for_path(p: &std::path::Path) -> String {
     }
 }
 
+fn handle_root(rq: Request) {
+    let index = std::fs::read_to_string("res/index.html").unwrap();
+    let resp = Response::from_string(&index).with_header(
+        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..]).unwrap(),
+    );
+    _ = rq.respond(resp);
+}
+fn handle_css(rq: Request) {
+    let css = std::fs::read_to_string("res/index.css").unwrap();
+    let resp = Response::from_string(&css).with_header(
+        Header::from_bytes(&b"Content-Type"[..], &b"text/css; charset=UTF-8"[..]).unwrap(),
+    );
+    _ = rq.respond(resp);
+}
+fn handle_js(rq: Request) {
+    let js = std::fs::read_to_string("res/index.js").unwrap();
+    let resp = Response::from_string(&js).with_header(
+        Header::from_bytes(&b"Content-Type"[..], &b"text/js; charset=UTF-8"[..]).unwrap(),
+    );
+    _ = rq.respond(resp);
+}
+fn handle_404(rq: Request) {
+    let js = std::fs::read_to_string("res/404.html").unwrap();
+    let resp = Response::from_string(&js).with_header(
+        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..]).unwrap(),
+    );
+    _ = rq.respond(resp);
+}
+
 fn json_error(status: u16, msg: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_string(format!("{{\"error\": \"{}\"}}", msg))
         .with_status_code(status)
@@ -194,6 +206,32 @@ fn json_error(status: u16, msg: &str) -> Response<std::io::Cursor<Vec<u8>>> {
             .unwrap(),
         )
         .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+}
+
+#[derive(Debug, Default)]
+struct Stats {
+    request_count: usize,
+    query_count: usize,
+    download_count: usize,
+    query_time: std::time::Duration,
+    download_size: usize,
+}
+
+impl std::fmt::Display for Stats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Statistics: ")?;
+        writeln!(f, "    Request count:         {}", self.request_count)?;
+        writeln!(f, "    Query count:           {}", self.query_count)?;
+        writeln!(f, "    File download count:   {}", self.download_count)?;
+        writeln!(f, "    Average query time:    {} s.", self.query_time.as_secs_f64() / self.query_count as f64)?;
+        writeln!(f, "    Whole downloaded size: {} kb.", self.download_size / 1024)?;
+        if self.download_count != 0 {
+            writeln!(f, "    Avg. downloaded size:  {} kb.", (self.download_size / 1024) as f64 / self.download_count as f64)?;
+        } else {
+            writeln!(f, "    Avg. downloaded size:  0 kb.")?;
+        }
+        Ok(())
+    }
 }
 
 use clap::Parser;
@@ -209,3 +247,4 @@ struct Args {
     #[arg(short, long, default_value_t = ("hendocs/".to_string()))]
     doc_folder: String,
 }
+

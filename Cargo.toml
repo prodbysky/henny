@@ -7,10 +7,6 @@ edition = "2024"
 name = "backend"
 path = "src/backend/main.rs"
 
-[[bin]]
-name = "frontend"
-path = "src/frontend/main.rs"
-
 [lib]
 name = "tfidf"
 path = "src/tfidf/lib.rs"

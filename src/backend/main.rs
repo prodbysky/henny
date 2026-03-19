@@ -26,29 +26,82 @@ fn main() {
             }
         };
 
+
         stats.request_count += 1;
 
-        let url = rq.url();
+        let url = rq.url().to_string();
+        let from = rq.remote_addr().cloned();
 
         if url.starts_with(QUERY_ENDPOINT) {
-            handle_query(rq, &mut search, &mut stats);
+            if let Err(_) = handle_query(rq, &mut search, &mut stats) {
+                stats.err_count += 1;
+            }
         } else if url.starts_with(FILE_ENDPOINT) {
-            handle_file_download(rq, &args, &mut stats);
+            if let Err(_) = handle_file_download(rq, &args, &mut stats) {
+                stats.err_count += 1;
+            }
         } else if url == "/" {
-            handle_root(rq);
+            if let Err(_) = handle_root(rq) {
+                stats.err_count += 1;
+            }
         } else if url == "/index.css" {
-            handle_css(rq);
+            if let Err(_) = handle_css(rq) {
+                stats.err_count += 1;
+            }
         } else if url == "/index.js" {
-            handle_js(rq);
+            if let Err(_) = handle_js(rq) {
+                stats.err_count += 1;
+            }
         } else {
-            handle_404(rq);
+            if let Err(_) = handle_404(rq) {
+                stats.err_count += 1;
+            }
         }
 
+        info!("Received request from {:?} for {}", from, url);
         info!("{}", &stats);
     }
 }
 
-fn handle_query(rq: Request, search: &mut Search, stats: &mut Stats) {
+
+#[derive(Debug)]
+pub enum Error {
+    JsonSerialization(serde_json::Error),
+    HeaderCreate,
+    Io(std::io::Error)
+}
+
+impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(value: serde_json::Error) -> Self {
+        Self::JsonSerialization(value)
+    }
+}
+
+impl From<()> for Error {
+    fn from(_value: ()) -> Self {
+        Self::HeaderCreate
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JsonSerialization(err) => write!(f, "Failed to serialize some json: {err}"),
+            Self::HeaderCreate => write!(f, "Failed to create a http header"),
+            Self::Io(err) => write!(f, "An IO error occured: {err}")
+        }
+    }
+}
+
+fn handle_query(rq: Request, search: &mut Search, stats: &mut Stats) -> Result<(), Error> {
     stats.query_count += 1;
     let url = rq.url();
     let query_string = url.split('?').nth(1).unwrap_or("");
@@ -65,18 +118,17 @@ fn handle_query(rq: Request, search: &mut Search, stats: &mut Stats) {
             stats.query_time += time.elapsed();
             let results = format!(
                 "{{\"results\": {}}}",
-                serde_json::to_string(&results).unwrap()
+                serde_json::to_string(&results)?
             );
             Response::from_string(results)
                 .with_header(
-                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])?,
                 )
                 .with_header(
                     Header::from_bytes(
                         &b"Content-Type"[..],
                         &b"application/json; charset=UTF-8"[..],
-                    )
-                    .unwrap(),
+                    )?
                 )
         }
         None => {
@@ -87,18 +139,17 @@ fn handle_query(rq: Request, search: &mut Search, stats: &mut Stats) {
                     Header::from_bytes(
                         &b"Content-Type"[..],
                         &b"application/json; charset=UTF-8"[..],
-                    )
-                    .unwrap(),
+                    )?
                 )
                 .with_header(
-                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
+                    Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..])?,
                 )
         }
     };
-    _ = rq.respond(response);
+    Ok(rq.respond(response)?)
 }
 
-fn handle_file_download(rq: Request, args: &Args, stats: &mut Stats) {
+fn handle_file_download(rq: Request, args: &Args, stats: &mut Stats) -> Result<(), Error> {
     let url = rq.url().to_string();
     let query_string = url.split('?').nth(1).unwrap_or("");
     
@@ -128,21 +179,21 @@ fn handle_file_download(rq: Request, args: &Args, stats: &mut Stats) {
                             Response::from_data(bytes)
                                 .with_header(
                                     Header::from_bytes(&b"Content-Type"[..], mime.as_bytes())
-                                        .unwrap(),
+                                    ?
                                 )
                                 .with_header(
                                     Header::from_bytes(
                                         &b"Content-Disposition"[..],
                                         disposition.as_bytes(),
                                     )
-                                    .unwrap(),
+                                    ?
                                 )
                                 .with_header(
                                     Header::from_bytes(
                                         &b"Access-Control-Allow-Origin"[..],
                                         &b"*"[..],
                                     )
-                                    .unwrap(),
+                                    ?
                                 )
                         }
                         Err(_) => json_error(404, "file not found"),
@@ -153,7 +204,7 @@ fn handle_file_download(rq: Request, args: &Args, stats: &mut Stats) {
         }
         None => json_error(400, "missing `path` parameter"),
     };
-    _ = rq.respond(response);
+    Ok(rq.respond(response)?)
 }
 
 fn mime_for_path(p: &std::path::Path) -> String {
@@ -166,33 +217,36 @@ fn mime_for_path(p: &std::path::Path) -> String {
     }
 }
 
-fn handle_root(rq: Request) {
-    let index = std::fs::read_to_string("res/index.html").unwrap();
+fn handle_root(rq: Request) -> Result<(), Error> {
+    let index = std::fs::read_to_string("res/index.html")?;
     let resp = Response::from_string(&index).with_header(
-        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..]).unwrap(),
+        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..])?
     );
-    _ = rq.respond(resp);
+    Ok(rq.respond(resp)?)
 }
-fn handle_css(rq: Request) {
-    let css = std::fs::read_to_string("res/index.css").unwrap();
+
+fn handle_css(rq: Request) -> Result<(), Error> {
+    let css = std::fs::read_to_string("res/index.css")?;
     let resp = Response::from_string(&css).with_header(
-        Header::from_bytes(&b"Content-Type"[..], &b"text/css; charset=UTF-8"[..]).unwrap(),
+        Header::from_bytes(&b"Content-Type"[..], &b"text/css; charset=UTF-8"[..])?
     );
-    _ = rq.respond(resp);
+    Ok(rq.respond(resp)?)
 }
-fn handle_js(rq: Request) {
-    let js = std::fs::read_to_string("res/index.js").unwrap();
+
+fn handle_js(rq: Request) -> Result<(), Error> {
+    let js = std::fs::read_to_string("res/index.js")?;
     let resp = Response::from_string(&js).with_header(
-        Header::from_bytes(&b"Content-Type"[..], &b"text/js; charset=UTF-8"[..]).unwrap(),
+        Header::from_bytes(&b"Content-Type"[..], &b"text/js; charset=UTF-8"[..])?
     );
-    _ = rq.respond(resp);
+    Ok(rq.respond(resp)?)
 }
-fn handle_404(rq: Request) {
-    let js = std::fs::read_to_string("res/404.html").unwrap();
+
+fn handle_404(rq: Request) -> Result<(), Error> {
+    let js = std::fs::read_to_string("res/404.html")?;
     let resp = Response::from_string(&js).with_header(
-        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..]).unwrap(),
+        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..])?
     );
-    _ = rq.respond(resp);
+    Ok(rq.respond(resp)?)
 }
 
 fn json_error(status: u16, msg: &str) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -212,6 +266,7 @@ fn json_error(status: u16, msg: &str) -> Response<std::io::Cursor<Vec<u8>>> {
 struct Stats {
     request_count: usize,
     query_count: usize,
+    err_count: usize,
     download_count: usize,
     query_time: std::time::Duration,
     download_size: usize,
@@ -222,6 +277,7 @@ impl std::fmt::Display for Stats {
         writeln!(f, "Statistics: ")?;
         writeln!(f, "    Request count:         {}", self.request_count)?;
         writeln!(f, "    Query count:           {}", self.query_count)?;
+        writeln!(f, "    Error count:           {}", self.err_count)?;
         writeln!(f, "    File download count:   {}", self.download_count)?;
         writeln!(f, "    Average query time:    {} s.", self.query_time.as_secs_f64() / self.query_count as f64)?;
         writeln!(f, "    Whole downloaded size: {} kb.", self.download_size / 1024)?;

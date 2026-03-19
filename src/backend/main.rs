@@ -1,4 +1,4 @@
-use log::{warn, info};
+use log::{warn, info, error};
 use std::collections::HashMap;
 use tiny_http::{Header, Request, Response};
 use url::form_urlencoded;
@@ -7,6 +7,51 @@ use tfidf::Search;
 
 const QUERY_ENDPOINT: &str = "/query";
 const FILE_ENDPOINT: &str = "/file";
+
+
+struct Handler {
+    applicable: fn(&str) -> bool,
+    handle: fn(Request, &Args, &mut Search, &mut Stats) -> Result<(), Error>
+}
+
+const HANDLERS: &[Handler] = &[
+    Handler {
+        applicable: |s| {
+            s.starts_with(QUERY_ENDPOINT)
+        },
+        handle: handle_query,
+    },
+    Handler {
+        applicable: |s| {
+            s.starts_with(FILE_ENDPOINT)
+        },
+        handle: handle_file_download,
+    },
+    Handler {
+        applicable: |s| {
+            s == "/"
+        },
+        handle: handle_root,
+    },
+    Handler {
+        applicable: |s| {
+            s == "/index.css"
+        },
+        handle: handle_css,
+    },
+    Handler {
+        applicable: |s| {
+            s == "/index.js"
+        },
+        handle: handle_js,
+    },
+    Handler {
+        applicable: |_| {
+            true
+        },
+        handle: handle_404,
+    },
+];
 
 fn main() {
     env_logger::init();
@@ -32,31 +77,12 @@ fn main() {
         let url = rq.url().to_string();
         let from = rq.remote_addr().cloned();
 
-        if url.starts_with(QUERY_ENDPOINT) {
-            if let Err(_) = handle_query(rq, &mut search, &mut stats) {
+        HANDLERS.iter().find(|x| (x.applicable)(&url)).inspect(|h| {
+            if let Err(e) = (h.handle)(rq, &args, &mut search, &mut stats) {
                 stats.err_count += 1;
+                error!("{e}");
             }
-        } else if url.starts_with(FILE_ENDPOINT) {
-            if let Err(_) = handle_file_download(rq, &args, &mut stats) {
-                stats.err_count += 1;
-            }
-        } else if url == "/" {
-            if let Err(_) = handle_root(rq) {
-                stats.err_count += 1;
-            }
-        } else if url == "/index.css" {
-            if let Err(_) = handle_css(rq) {
-                stats.err_count += 1;
-            }
-        } else if url == "/index.js" {
-            if let Err(_) = handle_js(rq) {
-                stats.err_count += 1;
-            }
-        } else {
-            if let Err(_) = handle_404(rq) {
-                stats.err_count += 1;
-            }
-        }
+        });
 
         info!("Received request from {:?} for {}", from, url);
         info!("{}", &stats);
@@ -101,7 +127,7 @@ impl std::fmt::Display for Error {
     }
 }
 
-fn handle_query(rq: Request, search: &mut Search, stats: &mut Stats) -> Result<(), Error> {
+fn handle_query(rq: Request, _args: &Args, search: &mut Search, stats: &mut Stats) -> Result<(), Error> {
     stats.query_count += 1;
     let url = rq.url();
     let query_string = url.split('?').nth(1).unwrap_or("");
@@ -149,7 +175,7 @@ fn handle_query(rq: Request, search: &mut Search, stats: &mut Stats) -> Result<(
     Ok(rq.respond(response)?)
 }
 
-fn handle_file_download(rq: Request, args: &Args, stats: &mut Stats) -> Result<(), Error> {
+fn handle_file_download(rq: Request, args: &Args, _: &mut Search, stats: &mut Stats) -> Result<(), Error> {
     let url = rq.url().to_string();
     let query_string = url.split('?').nth(1).unwrap_or("");
     
@@ -217,7 +243,7 @@ fn mime_for_path(p: &std::path::Path) -> String {
     }
 }
 
-fn handle_root(rq: Request) -> Result<(), Error> {
+fn handle_root(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
     let index = std::fs::read_to_string("res/index.html")?;
     let resp = Response::from_string(&index).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..])?
@@ -225,7 +251,7 @@ fn handle_root(rq: Request) -> Result<(), Error> {
     Ok(rq.respond(resp)?)
 }
 
-fn handle_css(rq: Request) -> Result<(), Error> {
+fn handle_css(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
     let css = std::fs::read_to_string("res/index.css")?;
     let resp = Response::from_string(&css).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"text/css; charset=UTF-8"[..])?
@@ -233,7 +259,7 @@ fn handle_css(rq: Request) -> Result<(), Error> {
     Ok(rq.respond(resp)?)
 }
 
-fn handle_js(rq: Request) -> Result<(), Error> {
+fn handle_js(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
     let js = std::fs::read_to_string("res/index.js")?;
     let resp = Response::from_string(&js).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"text/js; charset=UTF-8"[..])?
@@ -241,7 +267,7 @@ fn handle_js(rq: Request) -> Result<(), Error> {
     Ok(rq.respond(resp)?)
 }
 
-fn handle_404(rq: Request) -> Result<(), Error> {
+fn handle_404(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
     let js = std::fs::read_to_string("res/404.html")?;
     let resp = Response::from_string(&js).with_header(
         Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..])?

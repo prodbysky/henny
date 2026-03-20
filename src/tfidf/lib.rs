@@ -104,10 +104,9 @@ impl Search {
                     Err(e) => errs.push(e),
                 }
             } else {
-                errs.extend(self.add_dir_inner(&entry.path())?); // ← recurse into _inner
+                errs.extend(self.add_dir_inner(&entry.path())?); 
             }
         }
-        // no rebuild here
         Ok(errs)
     }
 

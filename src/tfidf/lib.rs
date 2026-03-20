@@ -1,110 +1,73 @@
 // TODO: Make this more of a library (good errors, performance etc)
 use log::warn;
 use std::{collections::HashMap, io};
+use rayon::prelude::*;
 
 #[derive(Debug, Default)]
 pub struct Search {
     docs: HashMap<String, Doc>,
-    cache: QueryScoreCache,
-}
-
-#[derive(Debug, Default)]
-pub struct QueryScoreCache {
-    tf: HashMap<(String, String), f64>,
-    idf: HashMap<(String, String), f64>,
-}
-
-impl QueryScoreCache {
-    pub fn get_tf(&self, path: String, term: String) -> Option<&f64> {
-        self.tf.get(&(path, term))
-    }
-    pub fn get_idf(&self, path: String, term: String) -> Option<&f64> {
-        self.idf.get(&(path, term))
-    }
-    pub fn set_tf(&mut self, path: String, term: String, tf: f64) {
-        self.tf.insert((path, term), tf);
-    }
-    pub fn set_idf(&mut self, path: String, term: String, idf: f64) {
-        self.idf.insert((path, term), idf);
-    }
+    idf_cache: HashMap<String, f64>,
+    doc_count: usize,
 }
 
 impl Search {
-    pub fn query(&mut self, terms: &[&str]) -> Vec<&str> {
-        let stem = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
-        let mut terms_ = vec![];
-        for t in terms {
-            terms_.push(stem.stem(t).to_string());
-        }
-        let mut docs = vec![];
-        for (k, v) in self.docs.iter() {
-            let mut score = 0.0;
-            for t in &terms_ {
-                let t = t.to_lowercase();
+    pub fn query(&self, terms: &[&str]) -> Vec<&str> {
+        let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
 
-                let tf = if let Some(tf_score) = self.cache.get_tf(k.to_string(), t.to_string()) {
-                    *tf_score
-                } else {
-                    let Some(count) = v.words.get(&t) else {
-                        continue;
+        let stemmed: Vec<String> = terms
+            .iter()
+            .map(|t| stemmer.stem(t).to_lowercase())
+            .collect();
+
+        let mut scores: Vec<(&str, f64)> = self
+            .docs
+            .par_iter()
+            .map(|(path, doc)| {
+                let score = stemmed.iter().fold(0.0_f64, |acc, term| {
+                    let Some(&tf_count) = doc.words.get(term.as_str()) else {
+                        return acc;
                     };
-                    let tf = *count as f64 / v.doc_word_count as f64;
-                    self.cache.set_tf(k.to_string(), t.to_string(), tf);
-                    tf
-                };
+                    let Some(&idf) = self.idf_cache.get(term.as_str()) else {
+                        return acc;
+                    };
+                    let tf = tf_count as f64 / doc.doc_word_count as f64;
+                    acc + tf * idf
+                });
+                (path.as_str(), score)
+            })
+            .collect();
 
-                let idf = if let Some(idf_score) = self.cache.get_idf(k.to_string(), t.to_string())
-                {
-                    *idf_score
-                } else {
-                    let idf = (self.docs.iter().count() as f64
-                        / self
-                            .docs
-                            .iter()
-                            .filter(|(_, d)| d.words.contains_key(&t))
-                            .count() as f64)
-                        .log2();
-                    self.cache.set_idf(k.to_string(), t.to_string(), idf);
-                    idf
-                };
-                score += tf * idf;
-            }
-            docs.push((k, score));
-        }
-        docs.sort_by(|(_, b1), (_, a1)| a1.total_cmp(b1));
-        docs.iter()
-            .filter(|(_p, d)| *d != 0.0)
-            .map(|(p, _)| p.as_str())
+        scores.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(a));
+        scores
+            .into_iter()
+            .filter(|(_, score)| *score != 0.0)
+            .map(|(path, _)| path)
             .collect()
     }
+
     pub fn add_dir(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
         let mut errs = vec![];
-        for d in p.read_dir()? {
-            let Ok(d) = d else { continue };
-            let Ok(meta) = d.metadata() else {
-                warn!(
-                    "Failed to retrieve metadata for file {}",
-                    d.path().display()
-                );
+        for entry in p.read_dir()? {
+            let Ok(entry) = entry else { continue };
+            let Ok(meta) = entry.metadata() else {
+                warn!("Failed to retrieve metadata for {}", entry.path().display());
                 continue;
             };
             if meta.is_file() {
-                let doc = match self.new_doc(&d.path()) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        errs.push(e);
-                        continue;
+                match self.new_doc(&entry.path()) {
+                    Ok(doc) => {
+                        self.docs.insert(entry.path().to_string_lossy().into_owned(), doc);
                     }
-                };
-                self.docs
-                    .insert(d.path().to_string_lossy().to_string(), doc);
+                    Err(e) => errs.push(e),
+                }
             } else {
-                // uhhhhh
-                errs.extend(self.add_dir(&d.path())?);
+                errs.extend(self.add_dir(&entry.path())?);
             }
         }
+        self.rebuild_idf_cache();
         Ok(errs)
     }
+
     fn new_doc(&mut self, p: &std::path::Path) -> Result<Doc, DocumentCreateError> {
         match p.extension() {
             Some(s) => match s.to_str().unwrap() {
@@ -139,6 +102,24 @@ impl Search {
             _ => Err(DocumentCreateError::UnsupportedFileExtension(None)),
         }
     }
+    fn rebuild_idf_cache(&mut self) {
+        self.idf_cache.clear();
+        self.doc_count = self.docs.len();
+
+        let mut df: HashMap<&str, usize> = HashMap::new();
+        for doc in self.docs.values() {
+            for term in doc.words.keys() {
+                *df.entry(term.as_str()).or_insert(0) += 1;
+            }
+        }
+
+        let n = self.doc_count as f64;
+        for (term, count) in df {
+            self.idf_cache
+                .insert(term.to_string(), (n / count as f64).log2());
+        }
+    }
+
 }
 
 #[derive(Debug)]

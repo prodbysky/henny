@@ -1,15 +1,29 @@
-// TODO: Make this more of a library (good errors, performance etc)
+use lasso::{Rodeo, RodeoReader, Spur};
 use log::warn;
 use rayon::prelude::*;
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, sync::Mutex};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Search {
     docs: HashMap<String, Doc>,
-    idf_cache: HashMap<String, f64>,
+    idf_cache: Vec<f64>,
     doc_count: usize,
     tf_strat: TermFreqStrategy,
     idf_strat: InverseDocFreqStrategy,
+    rodeo: RodeoReader,
+}
+
+impl Default for Search {
+    fn default() -> Self {
+        Self {
+            docs: HashMap::default(),
+            idf_cache: vec![],
+            doc_count: 0,
+            tf_strat: TermFreqStrategy::default(),
+            idf_strat: InverseDocFreqStrategy::default(),
+            rodeo: Rodeo::default().into_reader(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -36,35 +50,32 @@ impl Search {
     pub fn query(&self, terms: &[&str]) -> Vec<&str> {
         let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
 
-        let stemmed: Vec<String> = terms
+        let spurs: Vec<Spur> = terms
             .iter()
-            .map(|t| stemmer.stem(t).to_lowercase())
+            .filter_map(|t| self.rodeo.get(&stemmer.stem(t).to_lowercase()))
             .collect();
 
         let mut scores: Vec<(&str, f64)> = self
             .docs
             .par_iter()
             .map(|(path, doc)| {
-                let score = stemmed.iter().fold(0.0_f64, |acc, term| {
-                    let Some(&tf_count) = doc.words.get(term.as_str()) else {
+                let score = spurs.iter().fold(0.0_f64, |acc, spur| {
+                    let Some(&tf_count) = doc.get(spur) else {
                         return acc;
                     };
-                    let Some(&idf) = self.idf_cache.get(term.as_str()) else {
+                    let Some(&idf) = self.idf_cache.get(spur_index(*spur)) else {
                         return acc;
                     };
-                    // https://en.wikipedia.org/wiki/Tf%E2%80%93idf#Definition
                     let tf = match self.tf_strat {
                         TermFreqStrategy::Binary => (tf_count != 0) as i64 as f64,
                         TermFreqStrategy::RawCount => tf_count as f64,
                         TermFreqStrategy::TermFreq => tf_count as f64 / doc.doc_word_count as f64,
                         TermFreqStrategy::LogNorm => (tf_count as f64 + 1.0).log2(),
                         TermFreqStrategy::DoubleNorm => {
-                            0.5 + 0.5
-                                * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64)
+                            0.5 + 0.5 * (tf_count as f64 / doc.max_count() as f64)
                         }
                         TermFreqStrategy::DoubleNormK(k) => {
-                            k + (1.0 - k)
-                                * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64)
+                            k + (1.0 - k) * (tf_count as f64 / doc.max_count() as f64)
                         }
                     };
                     acc + tf * idf
@@ -82,13 +93,23 @@ impl Search {
     }
 
     pub fn add_dir(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
-        let errs = self.add_dir_inner(p)?;
-        self.rebuild_idf_cache();
+        let rodeo = Mutex::new(Rodeo::default());
+        let mut errs = self.add_dir_inner(p, &rodeo)?;
+
+        let built = rodeo
+            .into_inner()
+            .expect("Rodeo Mutex was poisoned during indexing");
+        self.rodeo = built.into_reader();
+
+        errs.extend(self.rebuild_idf_cache());
         Ok(errs)
     }
 
-
-    fn add_dir_inner(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
+    fn add_dir_inner(
+        &mut self,
+        p: &std::path::Path,
+        rodeo: &Mutex<Rodeo>,
+    ) -> Result<Vec<DocumentCreateError>, io::Error> {
         let mut errs = vec![];
         for entry in p.read_dir()? {
             let Ok(entry) = entry else { continue };
@@ -97,67 +118,36 @@ impl Search {
                 continue;
             };
             if meta.is_file() {
-                match self.new_doc(&entry.path()) {
+                match Doc::from_path(&entry.path(), rodeo) {
                     Ok(doc) => {
-                        self.docs.insert(entry.path().to_string_lossy().into_owned(), doc);
+                        self.docs
+                            .insert(entry.path().to_string_lossy().into_owned(), doc);
                     }
                     Err(e) => errs.push(e),
                 }
             } else {
-                errs.extend(self.add_dir_inner(&entry.path())?); 
+                errs.extend(self.add_dir_inner(&entry.path(), rodeo)?);
             }
         }
         Ok(errs)
     }
 
-    fn new_doc(&mut self, p: &std::path::Path) -> Result<Doc, DocumentCreateError> {
-        match p.extension() {
-            Some(s) => match s.to_str().unwrap() {
-                "xml" | "xhtml" => {
-                    let file = std::io::BufReader::new(std::fs::File::open(p)?);
-                    let parser = xml::EventReader::new(file);
-                    let mut text = String::with_capacity(1024 * 256);
-                    for e in parser {
-                        if let Ok(xml::reader::XmlEvent::Characters(c)) = e {
-                            text.push_str(&c);
-                            text.push(' ');
-                        }
-                    }
-                    Ok(Doc::from_text(&text))
-                }
-                "pdf" => {
-                    let doc = lopdf::Document::load(&p).unwrap();
-                    if doc.is_encrypted() {
-                        return Err(DocumentCreateError::EncryptedPDF);
-                    }
-                    Ok(Doc::from_text(&doc.extract_text(
-                        &doc.get_pages().into_keys().collect::<Vec<_>>(),
-                    )?))
-                }
-                "html" => {
-                    let text = html2md::rewrite_html(&std::fs::read_to_string(p)?, false);
-                    Ok(Doc::from_text(&text))
-                }
-                ext => Err(DocumentCreateError::UnsupportedFileExtension(Some(
-                    ext.to_string(),
-                ))),
-            },
-            _ => Err(DocumentCreateError::UnsupportedFileExtension(None)),
-        }
-    }
-    fn rebuild_idf_cache(&mut self) {
-        self.idf_cache.clear();
+    fn rebuild_idf_cache(&mut self) -> Vec<DocumentCreateError> {
         self.doc_count = self.docs.len();
+        let n = self.doc_count as f64;
 
-        let mut df: HashMap<&str, usize> = HashMap::new();
+        let num_slots = self.rodeo.len() + 1;
+        self.idf_cache.clear();
+        self.idf_cache.resize(num_slots, 0.0);
+
+        let mut df: HashMap<Spur, u32> = HashMap::new();
         for doc in self.docs.values() {
-            for term in doc.words.keys() {
-                *df.entry(term.as_str()).or_insert(0) += 1;
+            for &spur in doc.spurs() {
+                *df.entry(spur).or_insert(0) += 1;
             }
         }
 
-        let n = self.doc_count as f64;
-        for (term, count) in df {
+        for (spur, count) in df {
             let idf = match self.idf_strat {
                 InverseDocFreqStrategy::Unary => 1.0,
                 InverseDocFreqStrategy::IDF => (n / count as f64).log2(),
@@ -166,9 +156,16 @@ impl Search {
                     ((n - count as f64) / count as f64).log2()
                 }
             };
-            self.idf_cache.insert(term.to_string(), idf);
+            self.idf_cache[spur_index(spur)] = idf;
         }
+
+        vec![]
     }
+}
+
+#[inline(always)]
+fn spur_index(s: Spur) -> usize {
+    s.into_inner().get() as usize
 }
 
 #[derive(Debug)]
@@ -211,37 +208,105 @@ impl From<std::io::Error> for DocumentCreateError {
 
 #[derive(Debug, Default)]
 pub struct Doc {
-    words: HashMap<String, usize>,
-    doc_word_count: usize,
+    words: Vec<(Spur, u32)>,
+    doc_word_count: u32,
 }
 
 impl Doc {
-    pub fn from_text(text: &str) -> Self {
-        let stem = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
-        let mut words_map = HashMap::new();
-        let mut current_word = String::new();
-        let mut doc_word_count = 0;
+    pub fn get(&self, spur: &Spur) -> Option<&u32> {
+        self.words
+            .binary_search_by_key(spur, |&(s, _)| s)
+            .ok()
+            .map(|i| &self.words[i].1)
+    }
 
-        let add_to_map = |word: &str, map: &mut HashMap<String, usize>| {
-            if !word.is_empty() {
-                *map.entry(word.to_string()).or_insert(0) += 1;
+    pub fn spurs(&self) -> impl Iterator<Item = &Spur> {
+        self.words.iter().map(|(s, _)| s)
+    }
+
+    pub fn max_count(&self) -> u32 {
+        self.words.iter().map(|&(_, c)| c).max().unwrap_or(1)
+    }
+
+    pub fn from_path(
+        p: &std::path::Path,
+        rodeo: &Mutex<Rodeo>,
+    ) -> Result<Self, DocumentCreateError> {
+        match p.extension() {
+            Some(s) => match s.to_str().unwrap() {
+                "xml" | "xhtml" => {
+                    let file = std::io::BufReader::new(std::fs::File::open(p)?);
+                    let parser = xml::EventReader::new(file);
+                    let mut text = String::with_capacity(1024 * 256);
+                    for e in parser {
+                        if let Ok(xml::reader::XmlEvent::Characters(c)) = e {
+                            text.push_str(&c);
+                            text.push(' ');
+                        }
+                    }
+                    Ok(Self::from_text(&text, rodeo))
+                }
+                "pdf" => {
+                    let doc = lopdf::Document::load(p).unwrap();
+                    if doc.is_encrypted() {
+                        return Err(DocumentCreateError::EncryptedPDF);
+                    }
+                    Ok(Self::from_text(
+                        &doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>())?,
+                        rodeo,
+                    ))
+                }
+                "html" => {
+                    let text = html2md::rewrite_html(&std::fs::read_to_string(p)?, false);
+                    Ok(Self::from_text(&text, rodeo))
+                }
+                ext => Err(DocumentCreateError::UnsupportedFileExtension(Some(
+                    ext.to_string(),
+                ))),
+            },
+            _ => Err(DocumentCreateError::UnsupportedFileExtension(None)),
+        }
+    }
+
+    pub fn from_text(text: &str, rodeo: &Mutex<Rodeo>) -> Self {
+        let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+
+        let mut counts: HashMap<Spur, u32> = HashMap::new();
+        let mut current_word = String::new();
+        let mut doc_word_count: u32 = 0;
+
+        let mut record = |word: &str| {
+            if word.is_empty() {
+                return;
             }
+            let stemmed = stemmer.stem(word).to_lowercase();
+            if stemmed.is_empty() {
+                return;
+            }
+            let spur = rodeo
+                .lock()
+                .expect("Rodeo Mutex poisoned")
+                .get_or_intern(&stemmed);
+            *counts.entry(spur).or_insert(0) += 1;
         };
 
         for c in text.chars() {
             if c.is_alphanumeric() || c == '\'' || c == '-' {
                 current_word.push(c);
             } else {
-                add_to_map(&stem.stem(&current_word).to_string(), &mut words_map);
+                record(&current_word);
                 current_word.clear();
                 doc_word_count += 1;
             }
         }
+        record(&current_word);
 
-        add_to_map(&stem.stem(&current_word).to_string(), &mut words_map);
+        let mut words: Vec<(Spur, u32)> = counts.into_iter().collect();
+        words.sort_unstable_by_key(|&(s, _)| s);
+        words.shrink_to_fit();
 
         Doc {
-            words: words_map,
+            words,
             doc_word_count,
         }
     }

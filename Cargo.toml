@@ -24,3 +24,4 @@ rust-stemmers = "1.2.0"
 clap = { version = "4.6.0", features = ["derive"] }
 rayon = "1.11.0"
 fast_html2md = "0.0.58"
+lasso = "0.7.3"

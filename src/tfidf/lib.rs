@@ -8,6 +8,28 @@ pub struct Search {
     docs: HashMap<String, Doc>,
     idf_cache: HashMap<String, f64>,
     doc_count: usize,
+    tf_strat: TermFreqStrategy,
+    idf_strat: InverseDocFreqStrategy
+}
+
+#[derive(Debug, Default)]
+enum TermFreqStrategy {
+    Binary,
+    RawCount,
+    #[default]
+    TermFreq,
+    LogNorm,
+    DoubleNorm,
+    DoubleNormK(f64)
+}
+
+#[derive(Debug, Default)]
+enum InverseDocFreqStrategy {
+    Unary,
+    #[default]
+    IDF,
+    IDFSmooth,
+    ProbabilisticIDF
 }
 
 impl Search {
@@ -30,7 +52,15 @@ impl Search {
                     let Some(&idf) = self.idf_cache.get(term.as_str()) else {
                         return acc;
                     };
-                    let tf = tf_count as f64 / doc.doc_word_count as f64;
+                    // https://en.wikipedia.org/wiki/Tf%E2%80%93idf#Definition
+                    let tf = match self.tf_strat {
+                        TermFreqStrategy::Binary => (tf_count != 0) as i64 as f64,
+                        TermFreqStrategy::RawCount => tf_count as f64,
+                        TermFreqStrategy::TermFreq => tf_count as f64 / doc.doc_word_count as f64,
+                        TermFreqStrategy::LogNorm => (tf_count as f64 + 1.0).log2(),
+                        TermFreqStrategy::DoubleNorm => 0.5 + 0.5 * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64),
+                        TermFreqStrategy::DoubleNormK(k) => k + (1.0 - k) * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64),
+                    };
                     acc + tf * idf
                 });
                 (path.as_str(), score)
@@ -115,8 +145,14 @@ impl Search {
 
         let n = self.doc_count as f64;
         for (term, count) in df {
+            let idf = match self.idf_strat {
+                InverseDocFreqStrategy::Unary => 1.0,
+                InverseDocFreqStrategy::IDF => (n / count as f64).log2(),
+                InverseDocFreqStrategy::IDFSmooth => (n / (1 + count) as f64).log2() + 1.0,
+                InverseDocFreqStrategy::ProbabilisticIDF => ((n - count as f64)/count as f64).log2()
+            };
             self.idf_cache
-                .insert(term.to_string(), (n / count as f64).log2());
+                .insert(term.to_string(), idf);
         }
     }
 

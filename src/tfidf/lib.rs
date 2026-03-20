@@ -1,7 +1,7 @@
 // TODO: Make this more of a library (good errors, performance etc)
 use log::warn;
-use std::{collections::HashMap, io};
 use rayon::prelude::*;
+use std::{collections::HashMap, io};
 
 #[derive(Debug, Default)]
 pub struct Search {
@@ -9,7 +9,7 @@ pub struct Search {
     idf_cache: HashMap<String, f64>,
     doc_count: usize,
     tf_strat: TermFreqStrategy,
-    idf_strat: InverseDocFreqStrategy
+    idf_strat: InverseDocFreqStrategy,
 }
 
 #[derive(Debug, Default)]
@@ -20,7 +20,7 @@ enum TermFreqStrategy {
     TermFreq,
     LogNorm,
     DoubleNorm,
-    DoubleNormK(f64)
+    DoubleNormK(f64),
 }
 
 #[derive(Debug, Default)]
@@ -29,7 +29,7 @@ enum InverseDocFreqStrategy {
     #[default]
     IDF,
     IDFSmooth,
-    ProbabilisticIDF
+    ProbabilisticIDF,
 }
 
 impl Search {
@@ -58,8 +58,14 @@ impl Search {
                         TermFreqStrategy::RawCount => tf_count as f64,
                         TermFreqStrategy::TermFreq => tf_count as f64 / doc.doc_word_count as f64,
                         TermFreqStrategy::LogNorm => (tf_count as f64 + 1.0).log2(),
-                        TermFreqStrategy::DoubleNorm => 0.5 + 0.5 * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64),
-                        TermFreqStrategy::DoubleNormK(k) => k + (1.0 - k) * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64),
+                        TermFreqStrategy::DoubleNorm => {
+                            0.5 + 0.5
+                                * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64)
+                        }
+                        TermFreqStrategy::DoubleNormK(k) => {
+                            k + (1.0 - k)
+                                * (tf_count as f64 / *doc.words.values().max().unwrap_or(&1) as f64)
+                        }
                     };
                     acc + tf * idf
                 });
@@ -76,6 +82,13 @@ impl Search {
     }
 
     pub fn add_dir(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
+        let errs = self.add_dir_inner(p)?;
+        self.rebuild_idf_cache();
+        Ok(errs)
+    }
+
+
+    fn add_dir_inner(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
         let mut errs = vec![];
         for entry in p.read_dir()? {
             let Ok(entry) = entry else { continue };
@@ -91,10 +104,10 @@ impl Search {
                     Err(e) => errs.push(e),
                 }
             } else {
-                errs.extend(self.add_dir(&entry.path())?);
+                errs.extend(self.add_dir_inner(&entry.path())?); // ← recurse into _inner
             }
         }
-        self.rebuild_idf_cache();
+        // no rebuild here
         Ok(errs)
     }
 
@@ -150,13 +163,13 @@ impl Search {
                 InverseDocFreqStrategy::Unary => 1.0,
                 InverseDocFreqStrategy::IDF => (n / count as f64).log2(),
                 InverseDocFreqStrategy::IDFSmooth => (n / (1 + count) as f64).log2() + 1.0,
-                InverseDocFreqStrategy::ProbabilisticIDF => ((n - count as f64)/count as f64).log2()
+                InverseDocFreqStrategy::ProbabilisticIDF => {
+                    ((n - count as f64) / count as f64).log2()
+                }
             };
-            self.idf_cache
-                .insert(term.to_string(), idf);
+            self.idf_cache.insert(term.to_string(), idf);
         }
     }
-
 }
 
 #[derive(Debug)]

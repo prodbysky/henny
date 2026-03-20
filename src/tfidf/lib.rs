@@ -122,9 +122,10 @@ impl Search {
                         &doc.get_pages().into_keys().collect::<Vec<_>>(),
                     )?))
                 }
-                "html" => Ok(Doc::from_text(&nanohtml2text::html2text(
-                    &std::fs::read_to_string(p)?,
-                ))),
+                "html" => {
+                    let text = html2md::rewrite_html(&std::fs::read_to_string(p)?, false);
+                    Ok(Doc::from_text(&text))
+                }
                 ext => Err(DocumentCreateError::UnsupportedFileExtension(Some(
                     ext.to_string(),
                 ))),

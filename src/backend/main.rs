@@ -47,7 +47,9 @@ fn main() {
     let mut stats = Stats::default();
 
     let mut search = Search::default();
+    let time = std::time::Instant::now();
     _ = search.add_dir(std::path::Path::new(&args.doc_folder));
+    info!("Indexing took: {:.2}", time.elapsed().as_secs_f64());
     let server = tiny_http::Server::http(format!("0.0.0.0:{}", args.port)).unwrap();
     loop {
         let rq = match server.recv() {

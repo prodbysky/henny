@@ -1,7 +1,7 @@
 use lasso::{Rodeo, RodeoReader, Spur};
 use log::warn;
 use rayon::prelude::*;
-use std::{collections::HashMap, io, sync::Mutex};
+use std::{collections::HashMap, io, path::PathBuf, sync::Mutex};
 
 #[derive(Debug)]
 pub struct Search {
@@ -94,7 +94,29 @@ impl Search {
 
     pub fn add_dir(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
         let rodeo = Mutex::new(Rodeo::default());
-        let mut errs = self.add_dir_inner(p, &rodeo)?;
+
+        let mut file_paths = Vec::new();
+        let mut walk_errs = Vec::new();
+        collect_paths(p, &mut file_paths, &mut walk_errs)?;
+
+        let results: Vec<(String, Result<Doc, DocumentCreateError>)> = file_paths
+            .into_par_iter()
+            .map(|path| {
+                let key = path.to_string_lossy().into_owned();
+                let result = Doc::from_path(&path, &rodeo);
+                (key, result)
+            })
+            .collect();
+
+        let mut errs: Vec<DocumentCreateError> = walk_errs;
+        for (key, result) in results {
+            match result {
+                Ok(doc) => {
+                    self.docs.insert(key, doc);
+                }
+                Err(e) => errs.push(e),
+            }
+        }
 
         let built = rodeo
             .into_inner()
@@ -102,33 +124,6 @@ impl Search {
         self.rodeo = built.into_reader();
 
         errs.extend(self.rebuild_idf_cache());
-        Ok(errs)
-    }
-
-    fn add_dir_inner(
-        &mut self,
-        p: &std::path::Path,
-        rodeo: &Mutex<Rodeo>,
-    ) -> Result<Vec<DocumentCreateError>, io::Error> {
-        let mut errs = vec![];
-        for entry in p.read_dir()? {
-            let Ok(entry) = entry else { continue };
-            let Ok(meta) = entry.metadata() else {
-                warn!("Failed to retrieve metadata for {}", entry.path().display());
-                continue;
-            };
-            if meta.is_file() {
-                match Doc::from_path(&entry.path(), rodeo) {
-                    Ok(doc) => {
-                        self.docs
-                            .insert(entry.path().to_string_lossy().into_owned(), doc);
-                    }
-                    Err(e) => errs.push(e),
-                }
-            } else {
-                errs.extend(self.add_dir_inner(&entry.path(), rodeo)?);
-            }
-        }
         Ok(errs)
     }
 
@@ -161,6 +156,30 @@ impl Search {
 
         vec![]
     }
+}
+
+fn collect_paths(
+    dir: &std::path::Path,
+    out: &mut Vec<PathBuf>,
+    errs: &mut Vec<DocumentCreateError>,
+) -> Result<(), io::Error> {
+    for entry in dir.read_dir()? {
+        let Ok(entry) = entry else { continue };
+        let Ok(meta) = entry.metadata() else {
+            warn!("Failed to retrieve metadata for {}", entry.path().display());
+            errs.push(DocumentCreateError::IOError(io::Error::new(
+                io::ErrorKind::Other,
+                format!("metadata error for {}", entry.path().display()),
+            )));
+            continue;
+        };
+        if meta.is_file() {
+            out.push(entry.path());
+        } else {
+            collect_paths(&entry.path(), out, errs)?;
+        }
+    }
+    Ok(())
 }
 
 #[inline(always)]

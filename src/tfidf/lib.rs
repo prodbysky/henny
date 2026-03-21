@@ -3,7 +3,6 @@ use log::warn;
 use rayon::prelude::*;
 use std::{collections::HashMap, io, path::PathBuf, sync::Mutex};
 
-#[derive(Debug)]
 pub struct Search {
     docs: HashMap<String, Doc>,
     idf_cache: Vec<f64>,
@@ -11,6 +10,7 @@ pub struct Search {
     tf_strat: TermFreqStrategy,
     idf_strat: InverseDocFreqStrategy,
     rodeo: RodeoReader,
+    stemmer: rust_stemmers::Stemmer
 }
 
 impl Default for Search {
@@ -22,6 +22,7 @@ impl Default for Search {
             tf_strat: TermFreqStrategy::default(),
             idf_strat: InverseDocFreqStrategy::default(),
             rodeo: Rodeo::default().into_reader(),
+            stemmer: rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English)
         }
     }
 }
@@ -48,11 +49,10 @@ enum InverseDocFreqStrategy {
 
 impl Search {
     pub fn query(&self, terms: &[&str]) -> Vec<&str> {
-        let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
 
         let spurs: Vec<Spur> = terms
             .iter()
-            .filter_map(|t| self.rodeo.get(&stemmer.stem(t).to_lowercase()))
+            .filter_map(|t| self.rodeo.get(&self.stemmer.stem(t).to_lowercase()))
             .collect();
 
         let mut scores: Vec<(&str, f64)> = self

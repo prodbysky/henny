@@ -138,8 +138,9 @@ fn handle_query(
             let q = query.split_whitespace().collect::<Vec<_>>();
             let time = std::time::Instant::now();
             let results = search.query(&q);
+            let n_results = params.get("n_result").unwrap_or(&"0".to_string()).parse().unwrap_or(0).clamp(0, results.len());
             stats.query_time += time.elapsed();
-            let results = format!("{{\"results\": {}}}", serde_json::to_string(&results)?);
+            let results = format!("{{\"results\": {}}}", serde_json::to_string(&results[..n_results])?);
             Response::from_string(results)
                 .with_header(Header::from_bytes(
                     &b"Access-Control-Allow-Origin"[..],

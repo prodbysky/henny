@@ -14,7 +14,7 @@ form.addEventListener("submit", async function (event) {
     showLoading();
 
     try {
-        const result = await fetch(`${backend_url}/query?query=${encodeURIComponent(query)}`);
+        const result = await fetch(`${backend_url}/query?query=${encodeURIComponent(query)}&n_result=255`);
         const data = await result.json();
 
         clearResults();

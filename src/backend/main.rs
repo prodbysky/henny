@@ -48,7 +48,9 @@ fn main() {
 
     let mut search = Search::default();
     let time = std::time::Instant::now();
-    let errs = search.add_dir(std::path::Path::new(&args.doc_folder)).unwrap();
+    let errs = search
+        .add_dir(std::path::Path::new(&args.doc_folder))
+        .unwrap();
     for e in errs {
         warn!("{e}");
     }

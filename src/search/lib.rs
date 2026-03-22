@@ -20,10 +20,10 @@ fn collect_paths(
     for entry in dir.read_dir()? {
         let Ok(entry) = entry else { continue };
         let Ok(meta) = entry.metadata() else {
-            errs.push(DocumentCreateError::IOError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("metadata error for {}", entry.path().display()),
-            )));
+            errs.push(DocumentCreateError::IOError(io::Error::other(format!(
+                "metadata error for {}",
+                entry.path().display()
+            ))));
             continue;
         };
         if meta.is_file() {
@@ -53,14 +53,14 @@ fn extract_text(path: &std::path::Path) -> Result<String, DocumentCreateError> {
             "pdf" => {
                 let doc = lopdf::Document::load(path)?;
                 if doc.is_encrypted() {
-                    return Err(DocumentCreateError::EncryptedPDF);
+                    Err(DocumentCreateError::EncryptedPDF)
                 } else {
-                    return Ok(doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>())?);
+                    Ok(doc.extract_text(&doc.get_pages().into_keys().collect::<Vec<_>>())?)
                 }
             }
             "html" => {
                 let text = html2md::rewrite_html(&std::fs::read_to_string(path)?, false);
-                return Ok(text);
+                Ok(text)
             }
             ext => Err(DocumentCreateError::UnsupportedFileExtension(Some(
                 ext.to_string(),

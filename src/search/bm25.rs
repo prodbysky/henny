@@ -15,7 +15,7 @@ pub struct BM25 {
     rodeo: RodeoReader,
     doc_len_sum: usize,
     bm_cache: HashMap<(String, Spur), f64>,
-    idf_cache: HashMap<Spur, f64>
+    idf_cache: HashMap<Spur, f64>,
 }
 
 struct Doc {
@@ -39,18 +39,20 @@ impl Doc {
     }
 }
 
-impl BM25 {
-    pub fn new() -> Self {
+impl Default for BM25 {
+    fn default() -> Self {
         Self {
             docs: Default::default(),
             stemmer: rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English),
             doc_len_sum: 0,
             rodeo: Rodeo::default().into_reader(),
             bm_cache: Default::default(),
-            idf_cache: Default::default()
+            idf_cache: Default::default(),
         }
     }
+}
 
+impl BM25 {
     pub fn doc_count(&self) -> usize {
         self.docs.len()
     }
@@ -70,7 +72,7 @@ impl SearchEngine for BM25 {
         let mut file_paths = vec![];
         let mut walk_errs = vec![];
         super::collect_paths(dir_path, &mut file_paths, &mut walk_errs).unwrap();
-        let results: Vec<(String, Result<(Doc, usize), DocumentCreateError>)> = file_paths
+        let results: Vec<_> = file_paths
             .into_par_iter()
             .map(|path| {
                 let key = path.to_string_lossy().into_owned();
@@ -92,11 +94,7 @@ impl SearchEngine for BM25 {
             }
         }
         self.rodeo = rodeo.into_inner().unwrap().into_reader();
-        if errs.is_empty() {
-            return None;
-        } else {
-            return Some(errs);
-        }
+        if errs.is_empty() { None } else { Some(errs) }
     }
 
     fn query(&mut self, query: &[&str]) -> Vec<&str> {
@@ -104,7 +102,7 @@ impl SearchEngine for BM25 {
         let b = 0.75;
         let spurs: Vec<Spur> = query
             .iter()
-            .filter_map(|t| self.rodeo.get(&self.stemmer.stem(t).to_lowercase()))
+            .filter_map(|t| self.rodeo.get(self.stemmer.stem(t).to_lowercase()))
             .collect();
         let mut results = vec![];
 
@@ -112,21 +110,25 @@ impl SearchEngine for BM25 {
             let dl = doc.words.iter().fold(0u32, |acc, (_, c)| acc + c) as f64;
             let mut score = 0.0;
             for term in &spurs {
-                let Some(&count) = doc.get(term) else { continue };
+                let Some(&count) = doc.get(term) else {
+                    continue;
+                };
                 let tf = count as f64;
                 let bm = match self.bm_cache.get(&(path.to_string(), *term)) {
                     None => {
-                        let bm = (tf * (k + 1.0))
-                            / (tf + k * (1.0 - b + b * (dl / self.avg_doc_len())));
+                        let bm =
+                            (tf * (k + 1.0)) / (tf + k * (1.0 - b + b * (dl / self.avg_doc_len())));
                         self.bm_cache.insert((path.to_string(), *term), bm);
                         bm
                     }
-                    Some(&bm) => bm
+                    Some(&bm) => bm,
                 };
                 let idf = match self.idf_cache.get(term) {
                     Some(&score) => score,
                     None => {
-                        let doc_count_containing_term = self.docs.iter()
+                        let doc_count_containing_term = self
+                            .docs
+                            .iter()
                             .filter(|(_, d)| d.get(term).is_some_and(|x| *x != 0))
                             .count() as f64;
                         let idf = ((self.doc_count() as f64 - doc_count_containing_term + 0.5)

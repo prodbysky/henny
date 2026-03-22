@@ -1,7 +1,6 @@
 use lasso::{Rodeo, RodeoReader, Spur};
-use log::warn;
 use rayon::prelude::*;
-use std::{collections::HashMap, io, path::PathBuf, sync::Mutex};
+use std::{collections::HashMap, sync::Mutex};
 
 use super::DocumentCreateError;
 use super::SearchEngine;
@@ -20,7 +19,7 @@ impl SearchEngine for TfIdf {
     fn query(&mut self, query: &[&str]) -> Vec<&str> {
         let spurs: Vec<Spur> = query
             .iter()
-            .filter_map(|t| self.rodeo.get(&self.stemmer.stem(t).to_lowercase()))
+            .filter_map(|t| self.rodeo.get(self.stemmer.stem(t).to_lowercase()))
             .collect();
 
         let mut scores: Vec<(&str, f64)> = self
@@ -77,11 +76,8 @@ impl SearchEngine for TfIdf {
             .collect();
 
         for (key, result) in results {
-            match result {
-                Ok(doc) => {
-                    self.docs.insert(key, doc);
-                }
-                Err(_) => {}
+            if let Ok(doc) = result {
+                self.docs.insert(key, doc);
             }
         }
 
@@ -145,7 +141,7 @@ impl TfIdf {
     pub fn query(&self, terms: &[&str]) -> Vec<&str> {
         let spurs: Vec<Spur> = terms
             .iter()
-            .filter_map(|t| self.rodeo.get(&self.stemmer.stem(t).to_lowercase()))
+            .filter_map(|t| self.rodeo.get(self.stemmer.stem(t).to_lowercase()))
             .collect();
 
         let mut scores: Vec<(&str, f64)> = self

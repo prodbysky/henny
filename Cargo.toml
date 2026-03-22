@@ -8,8 +8,8 @@ name = "backend"
 path = "src/backend/main.rs"
 
 [lib]
-name = "tfidf"
-path = "src/tfidf/lib.rs"
+name = "search"
+path = "src/search/lib.rs"
 
 [dependencies]
 env_logger = "0.11.9"

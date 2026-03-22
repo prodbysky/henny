@@ -3,17 +3,120 @@ use log::warn;
 use rayon::prelude::*;
 use std::{collections::HashMap, io, path::PathBuf, sync::Mutex};
 
-pub struct Search {
+use super::SearchEngine;
+
+pub struct TfIdf {
     docs: HashMap<String, Doc>,
     idf_cache: Vec<f64>,
     doc_count: usize,
     tf_strat: TermFreqStrategy,
     idf_strat: InverseDocFreqStrategy,
     rodeo: RodeoReader,
-    stemmer: rust_stemmers::Stemmer
+    stemmer: rust_stemmers::Stemmer,
 }
 
-impl Default for Search {
+impl SearchEngine for TfIdf {
+    fn query(&mut self, query: &[&str]) -> Vec<&str> {
+        let spurs: Vec<Spur> = query
+            .iter()
+            .filter_map(|t| self.rodeo.get(&self.stemmer.stem(t).to_lowercase()))
+            .collect();
+
+        let mut scores: Vec<(&str, f64)> = self
+            .docs
+            .par_iter()
+            .map(|(path, doc)| {
+                let score = spurs.iter().fold(0.0_f64, |acc, spur| {
+                    let Some(&tf_count) = doc.get(spur) else {
+                        return acc;
+                    };
+                    let Some(&idf) = self.idf_cache.get(spur_index(*spur)) else {
+                        return acc;
+                    };
+                    let tf = match self.tf_strat {
+                        TermFreqStrategy::Binary => (tf_count != 0) as i64 as f64,
+                        TermFreqStrategy::RawCount => tf_count as f64,
+                        TermFreqStrategy::TermFreq => tf_count as f64 / doc.doc_word_count as f64,
+                        TermFreqStrategy::LogNorm => (tf_count as f64 + 1.0).log2(),
+                        TermFreqStrategy::DoubleNorm => {
+                            0.5 + 0.5 * (tf_count as f64 / doc.max_count() as f64)
+                        }
+                        TermFreqStrategy::DoubleNormK(k) => {
+                            k + (1.0 - k) * (tf_count as f64 / doc.max_count() as f64)
+                        }
+                    };
+                    acc + tf * idf
+                });
+                (path.as_str(), score)
+            })
+            .collect();
+
+        scores.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(a));
+        scores
+            .into_iter()
+            .filter(|(_, score)| *score != 0.0)
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    fn add_dir(&mut self, dir_path: &std::path::Path) {
+        fn collect_paths(
+            dir: &std::path::Path,
+            out: &mut Vec<PathBuf>,
+            errs: &mut Vec<DocumentCreateError>,
+        ) -> Result<(), io::Error> {
+            for entry in dir.read_dir()? {
+                let Ok(entry) = entry else { continue };
+                let Ok(meta) = entry.metadata() else {
+                    warn!("Failed to retrieve metadata for {}", entry.path().display());
+                    errs.push(DocumentCreateError::IOError(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("metadata error for {}", entry.path().display()),
+                    )));
+                    continue;
+                };
+                if meta.is_file() {
+                    out.push(entry.path());
+                } else {
+                    collect_paths(&entry.path(), out, errs)?;
+                }
+            }
+            Ok(())
+        }
+        let rodeo = Mutex::new(Rodeo::default());
+
+        let mut file_paths = Vec::new();
+        let mut walk_errs = Vec::new();
+        collect_paths(dir_path, &mut file_paths, &mut walk_errs).unwrap();
+
+        let results: Vec<(String, Result<Doc, DocumentCreateError>)> = file_paths
+            .into_par_iter()
+            .map(|path| {
+                let key = path.to_string_lossy().into_owned();
+                let result = Doc::from_path(&path, &rodeo);
+                (key, result)
+            })
+            .collect();
+
+        for (key, result) in results {
+            match result {
+                Ok(doc) => {
+                    self.docs.insert(key, doc);
+                }
+                Err(_) => {},
+            }
+        }
+
+        let built = rodeo
+            .into_inner()
+            .expect("Rodeo Mutex was poisoned during indexing");
+        self.rodeo = built.into_reader();
+
+        self.rebuild_idf_cache();
+    }
+}
+
+impl Default for TfIdf {
     fn default() -> Self {
         Self {
             docs: HashMap::default(),
@@ -22,13 +125,13 @@ impl Default for Search {
             tf_strat: TermFreqStrategy::default(),
             idf_strat: InverseDocFreqStrategy::default(),
             rodeo: Rodeo::default().into_reader(),
-            stemmer: rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English)
+            stemmer: rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English),
         }
     }
 }
 
 #[derive(Debug, Default)]
-enum TermFreqStrategy {
+pub enum TermFreqStrategy {
     Binary,
     RawCount,
     #[default]
@@ -39,7 +142,7 @@ enum TermFreqStrategy {
 }
 
 #[derive(Debug, Default)]
-enum InverseDocFreqStrategy {
+pub enum InverseDocFreqStrategy {
     Unary,
     #[default]
     IDF,
@@ -47,9 +150,16 @@ enum InverseDocFreqStrategy {
     ProbabilisticIDF,
 }
 
-impl Search {
-    pub fn query(&self, terms: &[&str]) -> Vec<&str> {
+impl TfIdf {
+    pub fn new(tf_strat: TermFreqStrategy, idf_strat: InverseDocFreqStrategy) -> Self {
+        Self {
+            tf_strat,
+            idf_strat,
+            ..Default::default()
+        }
+    }
 
+    pub fn query(&self, terms: &[&str]) -> Vec<&str> {
         let spurs: Vec<Spur> = terms
             .iter()
             .filter_map(|t| self.rodeo.get(&self.stemmer.stem(t).to_lowercase()))
@@ -92,41 +202,6 @@ impl Search {
             .collect()
     }
 
-    pub fn add_dir(&mut self, p: &std::path::Path) -> Result<Vec<DocumentCreateError>, io::Error> {
-        let rodeo = Mutex::new(Rodeo::default());
-
-        let mut file_paths = Vec::new();
-        let mut walk_errs = Vec::new();
-        collect_paths(p, &mut file_paths, &mut walk_errs)?;
-
-        let results: Vec<(String, Result<Doc, DocumentCreateError>)> = file_paths
-            .into_par_iter()
-            .map(|path| {
-                let key = path.to_string_lossy().into_owned();
-                let result = Doc::from_path(&path, &rodeo);
-                (key, result)
-            })
-            .collect();
-
-        let mut errs: Vec<DocumentCreateError> = walk_errs;
-        for (key, result) in results {
-            match result {
-                Ok(doc) => {
-                    self.docs.insert(key, doc);
-                }
-                Err(e) => errs.push(e),
-            }
-        }
-
-        let built = rodeo
-            .into_inner()
-            .expect("Rodeo Mutex was poisoned during indexing");
-        self.rodeo = built.into_reader();
-
-        errs.extend(self.rebuild_idf_cache());
-        Ok(errs)
-    }
-
     fn rebuild_idf_cache(&mut self) -> Vec<DocumentCreateError> {
         self.doc_count = self.docs.len();
         let n = self.doc_count as f64;
@@ -158,29 +233,6 @@ impl Search {
     }
 }
 
-fn collect_paths(
-    dir: &std::path::Path,
-    out: &mut Vec<PathBuf>,
-    errs: &mut Vec<DocumentCreateError>,
-) -> Result<(), io::Error> {
-    for entry in dir.read_dir()? {
-        let Ok(entry) = entry else { continue };
-        let Ok(meta) = entry.metadata() else {
-            warn!("Failed to retrieve metadata for {}", entry.path().display());
-            errs.push(DocumentCreateError::IOError(io::Error::new(
-                io::ErrorKind::Other,
-                format!("metadata error for {}", entry.path().display()),
-            )));
-            continue;
-        };
-        if meta.is_file() {
-            out.push(entry.path());
-        } else {
-            collect_paths(&entry.path(), out, errs)?;
-        }
-    }
-    Ok(())
-}
 
 #[inline(always)]
 fn spur_index(s: Spur) -> usize {

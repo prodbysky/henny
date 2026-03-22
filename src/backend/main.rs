@@ -3,14 +3,15 @@ use std::collections::HashMap;
 use tiny_http::{Header, Request, Response};
 use url::form_urlencoded;
 
-use tfidf::Search;
+use search::TfIdf;
+use search::SearchEngine;
 
 const QUERY_ENDPOINT: &str = "/query";
 const FILE_ENDPOINT: &str = "/file";
 
 struct Handler {
     applicable: fn(&str) -> bool,
-    handle: fn(Request, &Args, &mut Search, &mut Stats) -> Result<(), Error>,
+    handle: fn(Request, &Args, &mut TfIdf, &mut Stats) -> Result<(), Error>,
 }
 
 const HANDLERS: &[Handler] = &[
@@ -46,14 +47,12 @@ fn main() {
 
     let mut stats = Stats::default();
 
-    let mut search = Search::default();
+    let mut search = TfIdf::new(
+        search::tfidf::TermFreqStrategy::DoubleNorm,
+        search::tfidf::InverseDocFreqStrategy::IDFSmooth,
+    );
     let time = std::time::Instant::now();
-    let errs = search
-        .add_dir(std::path::Path::new(&args.doc_folder))
-        .unwrap();
-    for e in errs {
-        warn!("{e}");
-    }
+    search.add_dir(std::path::Path::new(&args.doc_folder));
     info!("Indexing took: {:.2}", time.elapsed().as_secs_f64());
     let server = tiny_http::Server::http(format!("0.0.0.0:{}", args.port)).unwrap();
     loop {
@@ -122,7 +121,7 @@ impl std::fmt::Display for Error {
 fn handle_query(
     rq: Request,
     _args: &Args,
-    search: &mut Search,
+    search: &mut TfIdf,
     stats: &mut Stats,
 ) -> Result<(), Error> {
     stats.query_count += 1;
@@ -138,9 +137,17 @@ fn handle_query(
             let q = query.split_whitespace().collect::<Vec<_>>();
             let time = std::time::Instant::now();
             let results = search.query(&q);
-            let n_results = params.get("n_result").unwrap_or(&"0".to_string()).parse().unwrap_or(0).clamp(0, results.len());
+            let n_results = params
+                .get("n_result")
+                .unwrap_or(&"0".to_string())
+                .parse()
+                .unwrap_or(0)
+                .clamp(0, results.len());
             stats.query_time += time.elapsed();
-            let results = format!("{{\"results\": {}}}", serde_json::to_string(&results[..n_results])?);
+            let results = format!(
+                "{{\"results\": {}}}",
+                serde_json::to_string(&results[..n_results])?
+            );
             Response::from_string(results)
                 .with_header(Header::from_bytes(
                     &b"Access-Control-Allow-Origin"[..],
@@ -171,7 +178,7 @@ fn handle_query(
 fn handle_file_download(
     rq: Request,
     args: &Args,
-    _: &mut Search,
+    _: &mut TfIdf,
     stats: &mut Stats,
 ) -> Result<(), Error> {
     let url = rq.url().to_string();
@@ -235,7 +242,7 @@ fn mime_for_path(p: &std::path::Path) -> String {
     }
 }
 
-fn handle_root(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
+fn handle_root(rq: Request, _: &Args, _: &mut TfIdf, _: &mut Stats) -> Result<(), Error> {
     let index = std::fs::read_to_string("res/index.html")?;
     let resp = Response::from_string(&index).with_header(Header::from_bytes(
         &b"Content-Type"[..],
@@ -244,7 +251,7 @@ fn handle_root(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(
     Ok(rq.respond(resp)?)
 }
 
-fn handle_css(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
+fn handle_css(rq: Request, _: &Args, _: &mut TfIdf, _: &mut Stats) -> Result<(), Error> {
     let css = std::fs::read_to_string("res/index.css")?;
     let resp = Response::from_string(&css).with_header(Header::from_bytes(
         &b"Content-Type"[..],
@@ -253,7 +260,7 @@ fn handle_css(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<()
     Ok(rq.respond(resp)?)
 }
 
-fn handle_js(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
+fn handle_js(rq: Request, _: &Args, _: &mut TfIdf, _: &mut Stats) -> Result<(), Error> {
     let js = std::fs::read_to_string("res/index.js")?;
     let resp = Response::from_string(&js).with_header(Header::from_bytes(
         &b"Content-Type"[..],
@@ -262,7 +269,7 @@ fn handle_js(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(),
     Ok(rq.respond(resp)?)
 }
 
-fn handle_404(rq: Request, _: &Args, _: &mut Search, _: &mut Stats) -> Result<(), Error> {
+fn handle_404(rq: Request, _: &Args, _: &mut TfIdf, _: &mut Stats) -> Result<(), Error> {
     let js = std::fs::read_to_string("res/404.html")?;
     let resp = Response::from_string(&js).with_header(Header::from_bytes(
         &b"Content-Type"[..],

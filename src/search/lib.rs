@@ -12,6 +12,26 @@ pub trait SearchEngine {
     fn add_dir(&mut self, dir_path: &std::path::Path) -> Option<Vec<DocumentCreateError>>;
 }
 
+pub enum SearchImpl {
+    TfIdf(TfIdf),
+    BM25(BM25),
+}
+
+impl SearchEngine for SearchImpl {
+    fn query(&mut self, query: &[&str]) -> Vec<&str> {
+        match self {
+            Self::TfIdf(model) => model.query(query),
+            Self::BM25(model) => model.query(query),
+        }
+    }
+    fn add_dir(&mut self, dir_path: &std::path::Path) -> Option<Vec<DocumentCreateError>> {
+        match self {
+            Self::TfIdf(model) => model.add_dir(dir_path),
+            Self::BM25(model) => model.add_dir(dir_path),
+        }
+    }
+}
+
 fn collect_paths(
     dir: &std::path::Path,
     out: &mut Vec<PathBuf>,

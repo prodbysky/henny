@@ -1,10 +1,9 @@
 use log::{error, info, warn};
-use search::BM25;
 use std::collections::HashMap;
 use tiny_http::{Header, Request, Response};
 use url::form_urlencoded;
 
-use search::SearchEngine;
+use search::{BM25, SearchEngine, SearchImpl, TfIdf};
 
 const QUERY_ENDPOINT: &str = "/query";
 const FILE_ENDPOINT: &str = "/file";
@@ -15,12 +14,15 @@ fn main() {
 
     let mut stats = Stats::default();
 
-    // let mut search = TfIdf::new(
-    //     search::tfidf::TermFreqStrategy::DoubleNorm,
-    //     search::tfidf::InverseDocFreqStrategy::IDFSmooth,
-    // );
+    let mut search = if args.legacy_search {
+        SearchImpl::TfIdf(TfIdf::new(
+            search::tfidf::TermFreqStrategy::DoubleNorm,
+            search::tfidf::InverseDocFreqStrategy::IDFSmooth,
+        ))
+    } else {
+        SearchImpl::BM25(BM25::default())
+    };
 
-    let mut search = BM25::default();
     let time = std::time::Instant::now();
     for e in search
         .add_dir(std::path::Path::new(&args.doc_folder))
@@ -286,7 +288,7 @@ impl std::fmt::Display for Stats {
         writeln!(f, "    File download count:   {}", self.download_count)?;
         writeln!(
             f,
-            "    Average query time:    {} s.",
+            "    Average query time:    {:.3} s.",
             self.query_time.as_secs_f64() / self.query_count as f64
         )?;
         writeln!(
@@ -319,4 +321,8 @@ struct Args {
 
     #[arg(short, long, default_value_t = ("hendocs/".to_string()))]
     doc_folder: String,
+
+    /// Use old TFIDF model for queries
+    #[arg(short, long)]
+    legacy_search: bool,
 }

@@ -1,6 +1,6 @@
 # henny
 
-A TF-IDF or BM25 based local document search engine with a simple web frontend.
+A TF-IDF or BM25 based local document search engine with a web/GTK4 frontend.
 
 ## Overview
 
@@ -13,14 +13,17 @@ henny indexes a directory of documents and lets you query them via a search inte
 cargo build --release
 ```
 
-### Running
+### Running the backend
 
-Start the frontend (serves the web UI):
+Start the backend (indexes docs, opens an API endpoint):
 ```
 cargo run
 ```
-
 Then open `http://127.0.0.1:6969` in your browser. The port is customizable via CLI args
+
+### Using the GTK4 frontend
+Ensure that the backend is running, after that run the henny_gtk4 executable.
+
 
 ### Document directory
 

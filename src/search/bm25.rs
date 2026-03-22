@@ -14,7 +14,8 @@ pub struct BM25 {
     stemmer: rust_stemmers::Stemmer,
     rodeo: RodeoReader,
     doc_len_sum: usize,
-    bm_cache: HashMap<(String, Spur), f64>
+    bm_cache: HashMap<(String, Spur), f64>,
+    idf_cache: HashMap<Spur, f64>
 }
 
 struct Doc {
@@ -45,7 +46,8 @@ impl BM25 {
             stemmer: rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English),
             doc_len_sum: 0,
             rodeo: Rodeo::default().into_reader(),
-            bm_cache: Default::default()
+            bm_cache: Default::default(),
+            idf_cache: Default::default()
         }
     }
 
@@ -121,13 +123,20 @@ impl SearchEngine for BM25 {
                     }
                     Some(&bm) => bm
                 };
-                let doc_count_containing_term = self.docs.iter()
-                    .filter(|(_, d)| d.get(term).is_some_and(|x| *x != 0))
-                    .count() as f64;
-                let idf = ((self.doc_count() as f64 - doc_count_containing_term + 0.5)
-                    / (doc_count_containing_term + 0.5)
-                    + 1.0)
-                    .ln();
+                let idf = match self.idf_cache.get(term) {
+                    Some(&score) => score,
+                    None => {
+                        let doc_count_containing_term = self.docs.iter()
+                            .filter(|(_, d)| d.get(term).is_some_and(|x| *x != 0))
+                            .count() as f64;
+                        let idf = ((self.doc_count() as f64 - doc_count_containing_term + 0.5)
+                            / (doc_count_containing_term + 0.5)
+                            + 1.0)
+                            .ln();
+                        self.idf_cache.insert(*term, idf);
+                        idf
+                    }
+                };
                 score += bm * idf;
             }
             results.push((path.as_str(), score));

@@ -122,9 +122,9 @@ fn handle_query(
             let results = search.query(&q);
             let n_results = params
                 .get("n_result")
-                .unwrap_or(&"0".to_string())
+                .unwrap_or(&"255".to_string())
                 .parse()
-                .unwrap_or(0)
+                .unwrap_or(255)
                 .clamp(0, results.len());
             stats.query_time += time.elapsed();
             let results = format!(
